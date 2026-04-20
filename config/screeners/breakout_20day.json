@@ -1,0 +1,88 @@
+{
+  "metadata": {
+    "version": "v1.2",
+    "last_updated": "2026-04-09T13:39:32.087530",
+    "updated_at": "2026-04-17",
+    "updated_by": "fix_3types"
+  },
+  "display_name": "20日突破",
+  "description": "识别价格突破20日高点的股票，用于捕捉趋势启动信号。",
+  "category": "经典公式",
+  "parameters": {
+    "CONSOLIDATION_DAYS": {
+      "value": 7,
+      "display_name": "横盘整理天数",
+      "description": "形成突破前需要横盘整理的最少交易日数",
+      "group": "基础设置",
+      "type": "int",
+      "min": 3,
+      "max": 21,
+      "default": 7
+    },
+    "VOLUME_BREAKOUT_MIN": {
+      "value": 1.5,
+      "display_name": "最小放量倍数",
+      "description": "突破日成交量需要达到近期均量的最小倍数",
+      "group": "成交量条件",
+      "type": "float",
+      "min": 1.2,
+      "max": 2.0,
+      "step": 0.1,
+      "default": 1.5
+    },
+    "VOLUME_BREAKOUT_MAX": {
+      "value": 2,
+      "display_name": "最大放量倍数",
+      "description": "突破日成交量不能超过的倍数上限（防暴量假突破）",
+      "group": "成交量条件",
+      "type": "float",
+      "min": 1.5,
+      "max": 3.0,
+      "step": 0.1,
+      "default": 2.0
+    },
+    "MIN_BREAKOUT_PCT": {
+      "value": 3,
+      "display_name": "最小突破涨幅（%）",
+      "description": "突破日的最小涨幅要求",
+      "group": "突破条件",
+      "type": "float",
+      "min": 1.0,
+      "max": 5.0,
+      "step": 0.5,
+      "default": 3.0
+    },
+    "MAX_BREAKOUT_PCT": {
+      "value": 7,
+      "display_name": "最大突破涨幅（%）",
+      "description": "突破日的最大涨幅限制（防追高）",
+      "group": "突破条件",
+      "type": "float",
+      "min": 5.0,
+      "max": 10.0,
+      "step": 0.5,
+      "default": 7.0
+    },
+    "LOOKBACK_DAYS": {
+      "value": 22,
+      "display_name": "回看周期（天）",
+      "description": "回溯分析的历史数据天数",
+      "group": "基础设置",
+      "type": "int",
+      "min": 10,
+      "max": 60,
+      "default": 20
+    },
+    "MIN_BODY_PCT": {
+      "value": 2,
+      "display_name": "最小K线实体涨幅（%）",
+      "description": "突破K线实体的最小涨幅要求（确认中阳/大阳）",
+      "group": "突破条件",
+      "type": "float",
+      "min": 1.0,
+      "max": 3.0,
+      "step": 0.5,
+      "default": 2.0
+    }
+  }
+}

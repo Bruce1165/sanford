@@ -1,0 +1,77 @@
+{
+  "display_name": "双底形态",
+  "description": "识别双底W形态：价格两次探底后反弹，突破颈线为买入信号。底部间隔3-6周，两底价差≤5%，突破颈线需放量确认。",
+  "category": "经典公式",
+  "metadata": {
+    "version": "v1.0",
+    "created": "2026-04-04",
+    "updated_at": "2026-04-17",
+    "updated_by": "fix_3types"
+  },
+  "parameters": {
+    "MIN_BOTTOM_DAYS": {
+      "value": 15,
+      "display_name": "最小底部间隔天数",
+      "description": "两个底部之间的最少交易日数",
+      "group": "基础设置",
+      "type": "int",
+      "min": 10,
+      "max": 60,
+      "default": 15
+    },
+    "MAX_BOTTOM_DAYS": {
+      "value": 45,
+      "display_name": "最大底部间隔天数",
+      "description": "两个底部之间的最多交易日数",
+      "group": "基础设置",
+      "type": "int",
+      "min": 30,
+      "max": 90,
+      "default": 45
+    },
+    "MAX_PRICE_DIFF": {
+      "value": 0.05,
+      "display_name": "最大价格差异",
+      "description": "两个低点价格允许的最大差异比例",
+      "group": "形态条件",
+      "type": "float",
+      "min": 0.03,
+      "max": 0.1,
+      "step": 0.01,
+      "default": 0.05
+    },
+    "MIN_BREAKOUT_PCT": {
+      "value": 0.03,
+      "display_name": "最小突破幅度",
+      "description": "收盘价突破颈线的最小幅度",
+      "group": "突破条件",
+      "type": "float",
+      "min": 0.02,
+      "max": 0.05,
+      "step": 0.005,
+      "default": 0.03
+    },
+    "MIN_VOLUME_RATIO": {
+      "value": 1.5,
+      "display_name": "最小成交量倍数",
+      "description": "突破日成交量相对于20日均量的最小倍数",
+      "group": "量能条件",
+      "type": "float",
+      "min": 1.2,
+      "max": 2.0,
+      "step": 0.1,
+      "default": 1.5
+    },
+    "NECK_MIN_RATIO": {
+      "value": 1.05,
+      "display_name": "颈线最小比例",
+      "description": "颈线价格相对于底部均价的最小比例",
+      "group": "形态条件",
+      "type": "float",
+      "min": 1.03,
+      "max": 1.1,
+      "step": 0.01,
+      "default": 1.05
+    }
+  }
+}

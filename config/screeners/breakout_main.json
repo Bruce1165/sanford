@@ -1,0 +1,121 @@
+{
+  "display_name": "突破主升",
+  "description": "寻找横盘整理后的真突破信号。入场条件：横盘箱体≥7天，突破前高；量能1.5-2倍5日均量；中阳/大阳收盘站稳突破位；无长上影。过滤假突破：长上影、暴量、尾盘回落。",
+  "category": "经典公式",
+  "metadata": {
+    "version": "v1.0",
+    "created": "2026-04-04",
+    "updated_at": "2026-04-17",
+    "updated_by": "fix_3types"
+  },
+  "parameters": {
+    "LIMIT_DAYS": {
+      "value": 34,
+      "display_name": "时间范围（交易日）",
+      "description": "筛选最近多少个交易日内的信号",
+      "group": "基础设置",
+      "type": "int",
+      "min": 20,
+      "max": 60,
+      "default": 34
+    },
+    "MIN_CONSOLIDATION_DAYS": {
+      "value": 7,
+      "display_name": "最小横盘天数",
+      "description": "横盘整理至少需要的天数",
+      "group": "基础设置",
+      "type": "int",
+      "min": 5,
+      "max": 20,
+      "default": 7
+    },
+    "VOLUME_BREAKOUT_MIN": {
+      "value": 1.5,
+      "display_name": "最小放量倍数",
+      "description": "突破日成交量需要达到5日均量的最小倍数",
+      "group": "量能条件",
+      "type": "float",
+      "min": 1.2,
+      "max": 2.0,
+      "step": 0.1,
+      "default": 1.5
+    },
+    "VOLUME_BREAKOUT_MAX": {
+      "value": 2.0,
+      "display_name": "最大放量倍数",
+      "description": "突破日成交量相对于5日均量的最大倍数（防暴量）",
+      "group": "量能条件",
+      "type": "float",
+      "min": 1.5,
+      "max": 2.5,
+      "step": 0.1,
+      "default": 2.0
+    },
+    "VOLUME_FAKE_THRESHOLD": {
+      "value": 3.0,
+      "display_name": "暴量阈值",
+      "description": "超过此倍数认为是假突破",
+      "group": "假突破过滤",
+      "type": "float",
+      "min": 2.5,
+      "max": 4.0,
+      "step": 0.1,
+      "default": 3.0
+    },
+    "MAX_UPPER_SHADOW_RATIO": {
+      "value": 0.33,
+      "display_name": "最大上影线比例",
+      "description": "上引线长度相对于实体的最大比例",
+      "group": "形态条件",
+      "type": "float",
+      "min": 0.2,
+      "max": 0.5,
+      "step": 0.01,
+      "default": 0.33
+    },
+    "MIN_BODY_PCT": {
+      "value": 3.0,
+      "display_name": "最小阳线实体涨幅（%）",
+      "description": "突破日阳线实体的最小涨幅",
+      "group": "形态条件",
+      "type": "float",
+      "min": 2.0,
+      "max": 5.0,
+      "step": 0.5,
+      "default": 3.0
+    },
+    "CONSOLIDATION_MAX_RANGE": {
+      "value": 0.15,
+      "display_name": "横盘最大波动幅度",
+      "description": "横盘期波动幅度上限（确认是横盘不是趋势）",
+      "group": "结构条件",
+      "type": "float",
+      "min": 0.1,
+      "max": 0.25,
+      "step": 0.01,
+      "default": 0.15
+    },
+    "BREAKOUT_MIN_PCT": {
+      "value": 0.01,
+      "display_name": "最小突破幅度",
+      "description": "突破箱体上沿的最小幅度",
+      "group": "结构条件",
+      "type": "float",
+      "min": 0.005,
+      "max": 0.03,
+      "step": 0.005,
+      "default": 0.01
+    },
+    "CLOSE_HIGH_MIN_RATIO": {
+      "value": 0.97,
+      "display_name": "收盘价/最高价最小比例",
+      "description": "收盘价相对于最高价的最小比例（防尾盘回落）",
+      "group": "假突破过滤",
+      "type": "float",
+      "min": 0.95,
+      "max": 0.99,
+      "step": 0.01,
+      "default": 0.97
+    }
+  }
+}

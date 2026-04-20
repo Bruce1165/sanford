@@ -1,0 +1,154 @@
+{
+  "display_name": "每日冷热股",
+  "description": "每日筛选热冷股：热股为涨幅≥5%且成交额≥10亿，冷股为跌幅≤-5%且成交额≥10亿。统计近20日涨跌停次数、多周期收益率、异动类型（放量、涨跌停、突破/破位、高换手）。",
+  "category": "内部公式",
+  "metadata": {
+    "version": "v2.0",
+    "created": "2026-04-04",
+    "updated_at": "2026-04-17",
+    "updated_by": "fix_3types"
+  },
+  "parameters": {
+    "LIMIT_UP_MAIN": {
+      "value": 9.9,
+      "display_name": "主板涨停阈值",
+      "description": "主板股票涨停判断阈值（%）",
+      "group": "涨跌停阈值",
+      "type": "float",
+      "min": 9.0,
+      "max": 10.0,
+      "step": 0.1,
+      "default": 9.9
+    },
+    "LIMIT_UP_GEM_STAR": {
+      "value": 19.9,
+      "display_name": "创业板/科创板涨停阈值",
+      "description": "创业板和科创板涨停判断阈值（%）",
+      "group": "涨跌停阈值",
+      "type": "float",
+      "min": 18.0,
+      "max": 20.0,
+      "step": 0.1,
+      "default": 19.9
+    },
+    "LIMIT_DOWN_MAIN": {
+      "value": -9.9,
+      "display_name": "主板跌停阈值",
+      "description": "主板股票跌停判断阈值（%）",
+      "group": "涨跌停阈值",
+      "type": "float",
+      "min": -10.0,
+      "max": -9.0,
+      "step": 0.1,
+      "default": -9.9
+    },
+    "LIMIT_DOWN_GEM_STAR": {
+      "value": -19.9,
+      "display_name": "创业板/科创板跌停阈值",
+      "description": "创业板和科创板跌停判断阈值（%）",
+      "group": "涨跌停阈值",
+      "type": "float",
+      "min": -20.0,
+      "max": -18.0,
+      "step": 0.1,
+      "default": -19.9
+    },
+    "NEW_STOCK_DAYS": {
+      "value": 60,
+      "display_name": "新股过滤天数",
+      "description": "上市不足此天数的股票将被过滤",
+      "group": "基础设置",
+      "type": "int",
+      "min": 30,
+      "max": 120,
+      "default": 60
+    },
+    "MIN_AMOUNT": {
+      "value": 10.0,
+      "display_name": "最小成交额",
+      "description": "筛选股票的最小成交额（亿元）",
+      "group": "筛选条件",
+      "type": "float",
+      "min": 5.0,
+      "max": 50.0,
+      "step": 1.0,
+      "default": 10.0
+    },
+    "HOT_PCT_THRESHOLD": {
+      "value": 5.0,
+      "display_name": "热股涨幅阈值",
+      "description": "判断为热股的最小涨幅百分比",
+      "group": "筛选条件",
+      "type": "float",
+      "min": 3.0,
+      "max": 10.0,
+      "step": 0.5,
+      "default": 5.0
+    },
+    "COLD_PCT_THRESHOLD": {
+      "value": -5.0,
+      "display_name": "冷股跌幅阈值",
+      "description": "判断为冷股的最大跌幅百分比",
+      "group": "筛选条件",
+      "type": "float",
+      "min": -10.0,
+      "max": -3.0,
+      "step": 0.5,
+      "default": -5.0
+    },
+    "LIMIT_STATS_DAYS": {
+      "value": 20,
+      "display_name": "涨跌停统计天数",
+      "description": "统计近N日的涨跌停次数",
+      "group": "统计设置",
+      "type": "int",
+      "min": 10,
+      "max": 60,
+      "default": 20
+    },
+    "HIGH_TURNOVER_THRESHOLD": {
+      "value": 15.0,
+      "display_name": "高换手阈值",
+      "description": "判断为高换手的最小换手率百分比",
+      "group": "异动判断",
+      "type": "float",
+      "min": 10.0,
+      "max": 30.0,
+      "step": 1.0,
+      "default": 15.0
+    },
+    "VOLUME_SURGE_TURNOVER": {
+      "value": 5.0,
+      "display_name": "放量换手阈值",
+      "description": "判断为放量的最小换手率百分比",
+      "group": "异动判断",
+      "type": "float",
+      "min": 3.0,
+      "max": 10.0,
+      "step": 0.5,
+      "default": 5.0
+    },
+    "BREAKOUT_THRESHOLD": {
+      "value": 0.99,
+      "display_name": "突破阈值",
+      "description": "突破近N日高点的判断比例（0.99=99%）",
+      "group": "异动判断",
+      "type": "float",
+      "min": 0.95,
+      "max": 0.999,
+      "step": 0.005,
+      "default": 0.99
+    },
+    "BREAKDOWN_THRESHOLD": {
+      "value": 1.01,
+      "display_name": "破位阈值",
+      "description": "跌破近N日低点的判断比例（1.01=101%）",
+      "group": "异动判断",
+      "type": "float",
+      "min": 1.001,
+      "max": 1.05,
+      "step": 0.005,
+      "default": 1.01
+    }
+  }
+}

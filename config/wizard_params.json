@@ -1,0 +1,215 @@
+{
+  "coffee_cup_wizard": {
+    "version": "v2.0",
+    "last_updated": "2026-04-10T00:00:00",
+    "market_context": {
+      "market": "china_a_share",
+      "special_rules": {
+        "t_plus_1": true,
+        "no_short_selling": true,
+        "limit_up_restriction": true,
+        "retail_dominant": true
+      }
+    },
+    "component_params": {
+      "handle": {
+        "enabled": true,
+        "use_existing_screener": true,
+        "period_min": 5,
+        "period_max": 21,
+        "shape_requirement": "upward",
+        "min_height_pct": 5,
+        "detection_source": "existing_screener",
+        "fallback_sources": ["custom_handle_detection"]
+      },
+      "left_wall": {
+        "enabled": false,
+        "use_existing_screener": true,
+        "period_min": 14,
+        "period_max": 60,
+        "decline_pct_min": 10,
+        "decline_pct_max": 40,
+        "detection_source": "existing_screener"
+      },
+      "bottom": {
+        "enabled": false,
+        "use_existing_screener": true,
+        "period_min": 10,
+        "period_max": 45,
+        "flatness_threshold": 0.15,
+        "max_decline_pct": 3,
+        "min_consolidation_days": 5,
+        "detection_source": "existing_screener"
+      },
+      "right_wall": {
+        "enabled": false,
+        "use_existing_screener": true,
+        "period_min": 14,
+        "period_max": 60,
+        "ascent_pct_min": 20,
+        "ascent_pct_max": 80,
+        "volume_pattern": "gradual_increase",
+        "detection_source": "existing_screener"
+      },
+      "cup_edge": {
+        "enabled": true,
+        "period_min": 5,
+        "period_max": 21,
+        "height_match_pct": 95,
+        "max_drop_pct": 5,
+        "min_drop_pct": 2,
+        "volume_shrink": true,
+        "max_rise_pct": 3,
+        "detection_source": "custom"
+      }
+    },
+    "sentiment_params": {
+      "volume_analysis": {
+        "enabled": true,
+        "window_days": 20,
+        "volatility_window": 30,
+        "spike_threshold": 2.0,
+        "spike_window": 3
+      },
+      "turnover_analysis": {
+        "enabled": true,
+        "high_threshold": 8,
+        "medium_threshold": 4,
+        "low_threshold": 2
+      },
+      "limit_up_sentiment": {
+        "enabled": true,
+        "proximity_days": [5, 10, 20],
+        "high_threshold": 0.08,
+        "medium_threshold": 0.05,
+        "low_threshold": 0.02
+      }
+    },
+    "capital_structure_params": {
+      "enabled": true,
+      "turnover_weight": 0.6,
+      "volatility_weight": 0.3,
+      "volume_consistency_weight": 0.1,
+      "retail_threshold": 0.5,
+      "institution_threshold": -0.5
+    },
+    "probability_formula": {
+      "base_components": ["cup_edge"],
+      "adjustment_factors": [
+        {
+          "name": "volume_sentiment",
+          "enabled": true,
+          "weight": 0.25,
+          "type": "multiplier",
+          "min_value": 0.5,
+          "max_value": 1.5,
+          "description": "Volume and sentiment multiplier based on 量能"
+        },
+        {
+          "name": "capital_structure",
+          "enabled": true,
+          "weight": 0.20,
+          "type": "multiplier",
+          "min_value": 0.7,
+          "max_value": 1.4,
+          "description": "Retail vs institutional flow dynamics"
+        },
+        {
+          "name": "limit_up_proximity",
+          "enabled": true,
+          "weight": 0.15,
+          "type": "multiplier",
+          "min_value": 0.9,
+          "max_value": 1.3,
+          "description": "T+1 limit-up anticipation (中国特有)"
+        },
+        {
+          "name": "trend_alignment",
+          "enabled": true,
+          "weight": 0.10,
+          "type": "multiplier",
+          "min_value": 0.8,
+          "max_value": 1.2,
+          "description": "Price trend and MA alignment"
+        },
+        {
+          "name": "rs_strength",
+          "enabled": true,
+          "weight": 0.15,
+          "type": "multiplier",
+          "min_value": 0.8,
+          "max_value": 1.3,
+          "description": "Relative strength vs market (RS)"
+        },
+        {
+          "name": "cycle_stage",
+          "enabled": false,
+          "weight": 0.0,
+          "type": "multiplier",
+          "min_value": 0.7,
+          "max_value": 1.3,
+          "description": "康波 cycle stage (accumulation/distribution) - disabled until data available"
+        },
+        {
+          "name": "sector_policy",
+          "enabled": false,
+          "weight": 0.0,
+          "type": "multiplier",
+          "min_value": 0.8,
+          "max_value": 1.3,
+          "description": "Sector-specific policy boost - disabled until policy data available"
+        },
+        {
+          "name": "geopolitics",
+          "enabled": false,
+          "weight": 0.0,
+          "type": "multiplier",
+          "min_value": 0.6,
+          "max_value": 1.4,
+          "description": "Geopolitical and domestic policy - disabled until news API available"
+        }
+      ],
+      "base_calculation": "dynamic",
+      "prediction_threshold": 50,
+      "probability_scale": "linear"
+    },
+    "validation": {
+      "test_periods": [
+        {
+          "start_date": "2025-06-01",
+          "end_date": "2025-06-30",
+          "min_samples": 50
+        },
+        {
+          "start_date": "2025-07-01",
+          "end_date": "2025-07-31",
+          "min_samples": 50
+        },
+        {
+          "start_date": "2025-08-01",
+          "end_date": "2025-08-31",
+          "min_samples": 50
+        },
+        {
+          "start_date": "2025-09-01",
+          "end_date": "2025-09-30",
+          "min_samples": 50
+        }
+      ],
+      "overall_accuracy_target": 0.65,
+      "top_n_accuracy_targets": {
+        "pct_70": 0.70,
+        "pct_60": 0.75,
+        "pct_50": 0.78
+      }
+    },
+    "optimization": {
+      "auto_optimize": true,
+      "optimization_window": "latest_30_days",
+      "min_iterations": 10,
+      "max_iterations": 100,
+      "convergence_threshold": 0.01,
+      "optimization_log_path": "data/wizard_optimization_log.json"
+    }
+  }
+}

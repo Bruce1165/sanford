@@ -1,0 +1,89 @@
+{
+  "display_name": "涨停倍量阴",
+  "description": "寻找涨停后出现倍量阴的启动信号。五个信号条件：信号一（阳线实体涨停，实体/下引≥3）、信号二（次日高开收阴，实体/(上引+下引)≥2）、信号三（信号二成交额>信号一×2）、信号四（地量，成交额<信号二×0.5）、信号五（启动日收涨，成交额>前一日×2）。",
+  "category": "内部公式",
+  "metadata": {
+    "version": "v1.0",
+    "created": "2026-04-04",
+    "updated_at": "2026-04-17",
+    "updated_by": "fix_3types"
+  },
+  "parameters": {
+    "LIMIT_DAYS": {
+      "value": 14,
+      "display_name": "时间范围（交易日）",
+      "description": "筛选最近多少个交易日内的信号",
+      "group": "基础设置",
+      "type": "int",
+      "min": 1,
+      "max": 60,
+      "default": 14
+    },
+    "LIMIT_UP_THRESHOLD": {
+      "value": 9.9,
+      "display_name": "涨停阈值（%）",
+      "description": "判断涨停的最低涨幅阈值",
+      "group": "信号条件",
+      "type": "float",
+      "min": 9.0,
+      "max": 10.5,
+      "step": 0.1,
+      "default": 9.9
+    },
+    "SIGNAL_ONE_BODY_RATIO": {
+      "value": 3.0,
+      "display_name": "信号一实体/下引倍数",
+      "description": "信号一实体长度需要达到下引线长度的倍数",
+      "group": "信号条件",
+      "type": "float",
+      "min": 2.0,
+      "max": 5.0,
+      "step": 0.5,
+      "default": 3.0
+    },
+    "SIGNAL_TWO_BODY_RATIO": {
+      "value": 2.0,
+      "display_name": "信号二实体/(上引+下引)倍数",
+      "description": "信号二阴线实体长度需要达到上引+下引之和的倍数",
+      "group": "信号条件",
+      "type": "float",
+      "min": 1.5,
+      "max": 3.0,
+      "step": 0.5,
+      "default": 2.0
+    },
+    "SIGNAL_THREE_VOLUME_RATIO": {
+      "value": 2.0,
+      "display_name": "信号三成交额倍数",
+      "description": "信号二当日成交额需要达到信号一当日成交额的倍数",
+      "group": "信号条件",
+      "type": "float",
+      "min": 1.5,
+      "max": 3.0,
+      "step": 0.1,
+      "default": 2.0
+    },
+    "SIGNAL_FOUR_VOLUME_RATIO": {
+      "value": 0.5,
+      "display_name": "信号四地量倍数",
+      "description": "地量日成交额需要小于信号二当日成交额的倍数",
+      "group": "信号条件",
+      "type": "float",
+      "min": 0.3,
+      "max": 0.7,
+      "step": 0.05,
+      "default": 0.5
+    },
+    "SIGNAL_FIVE_VOLUME_RATIO": {
+      "value": 2.0,
+      "display_name": "信号五成交额倍数",
+      "description": "启动日成交额需要达到前一日成交额的倍数",
+      "group": "信号条件",
+      "type": "float",
+      "min": 1.5,
+      "max": 3.0,
+      "step": 0.1,
+      "default": 2.0
+    }
+  }
+}

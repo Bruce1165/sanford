@@ -1,0 +1,78 @@
+{
+  "display_name": "涨停金凤凰",
+  "description": "寻找涨停板后的强势延续机会。五个信号条件：信号一（非一字板涨停，成交额≥前1日2倍）、信号二（次日高开收阳，成交额≥信号一2倍）、信号三（信号一到信号五之间不破信号一最高价）、信号四（地量日，成交额<前1日0.5倍）、信号五（启动日收涨，成交额≥前1日2倍，创新高）。",
+  "category": "内部公式",
+  "metadata": {
+    "version": "v1.0",
+    "created": "2026-04-04",
+    "updated_at": "2026-04-17",
+    "updated_by": "fix_3types"
+  },
+  "parameters": {
+    "LIMIT_DAYS": {
+      "value": 14,
+      "display_name": "时间范围（交易日）",
+      "description": "筛选最近多少个交易日内的信号",
+      "group": "基础设置",
+      "type": "int",
+      "min": 1,
+      "max": 60,
+      "default": 14
+    },
+    "LIMIT_UP_THRESHOLD": {
+      "value": 9.9,
+      "display_name": "涨停阈值（%）",
+      "description": "判断涨停的最低涨幅阈值",
+      "group": "信号条件",
+      "type": "float",
+      "min": 9.0,
+      "max": 10.5,
+      "step": 0.1,
+      "default": 9.9
+    },
+    "SIGNAL_ONE_VOLUME_RATIO": {
+      "value": 2.0,
+      "display_name": "信号一成交额倍数",
+      "description": "信号一当日成交额需要达到前一日的倍数",
+      "group": "信号条件",
+      "type": "float",
+      "min": 1.5,
+      "max": 3.0,
+      "step": 0.1,
+      "default": 2.0
+    },
+    "SIGNAL_TWO_VOLUME_RATIO": {
+      "value": 2.0,
+      "display_name": "信号二成交额倍数",
+      "description": "信号二当日成交额需要达到前一日的倍数",
+      "group": "信号条件",
+      "type": "float",
+      "min": 1.5,
+      "max": 3.0,
+      "step": 0.1,
+      "default": 2.0
+    },
+    "SIGNAL_FOUR_VOLUME_RATIO": {
+      "value": 0.5,
+      "display_name": "信号四地量倍数",
+      "description": "信号四（地量日）成交额需要小于前一日的最大倍数",
+      "group": "信号条件",
+      "type": "float",
+      "min": 0.3,
+      "max": 0.7,
+      "step": 0.05,
+      "default": 0.5
+    },
+    "SIGNAL_FIVE_VOLUME_RATIO": {
+      "value": 2.0,
+      "display_name": "信号五成交额倍数",
+      "description": "信号五（启动日）成交额需要达到前一日的倍数",
+      "group": "信号条件",
+      "type": "float",
+      "min": 1.5,
+      "max": 3.0,
+      "step": 0.1,
+      "default": 2.0
+    }
+  }
+}

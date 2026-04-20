@@ -1,0 +1,45 @@
+{
+  "display_name": "二板回调",
+  "description": "寻找两个连续涨停板后的回调信号。三个信号条件：信号一（连续两个涨停，首板成交额≥前日2倍）、信号二（两板后任意交易日最低价不低于首板开盘价）、信号三（两板后找到启动日，收涨、阳线、成交额最大、创新高）。",
+  "category": "内部公式",
+  "metadata": {
+    "version": "v4.0",
+    "created": "2026-04-04",
+    "updated_at": "2026-04-17",
+    "updated_by": "fix_3types"
+  },
+  "parameters": {
+    "LIMIT_DAYS": {
+      "value": 14,
+      "display_name": "时间范围（交易日）",
+      "description": "筛选最近多少个交易日内的信号",
+      "group": "基础设置",
+      "type": "int",
+      "min": 1,
+      "max": 60,
+      "default": 14
+    },
+    "LIMIT_UP_THRESHOLD": {
+      "value": 9.9,
+      "display_name": "涨停阈值（%）",
+      "description": "判断涨停的最低涨幅阈值",
+      "group": "信号条件",
+      "type": "float",
+      "min": 9.0,
+      "max": 10.5,
+      "step": 0.1,
+      "default": 9.9
+    },
+    "FIRST_BOARD_VOLUME_RATIO": {
+      "value": 2.0,
+      "display_name": "首板成交额倍数",
+      "description": "首板成交额必须达到前一日的倍数",
+      "group": "信号条件",
+      "type": "float",
+      "min": 1.5,
+      "max": 3.0,
+      "step": 0.1,
+      "default": 2.0
+    }
+  }
+}

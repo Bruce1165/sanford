@@ -1,0 +1,87 @@
+{
+  "display_name": "高紧旗形",
+  "description": "识别欧奈尔最喜爱的高紧旗形形态：3-6周快速上涨100%+后进入2-4周紧凑整理（回调10-25%），突破时放量继续上攻。",
+  "category": "经典公式",
+  "metadata": {
+    "version": "v1.0",
+    "created": "2026-04-04",
+    "updated_at": "2026-04-17",
+    "updated_by": "fix_3types"
+  },
+  "parameters": {
+    "POLE_MIN_GAIN": {
+      "value": 1.0,
+      "display_name": "旗杆最小涨幅",
+      "description": "旗杆上涨需要的最小涨幅比例",
+      "group": "旗杆条件",
+      "type": "float",
+      "min": 0.8,
+      "max": 1.5,
+      "step": 0.1,
+      "default": 1.0
+    },
+    "POLE_MAX_DAYS": {
+      "value": 45,
+      "display_name": "旗杆最大天数",
+      "description": "旗杆上涨的最大交易日数",
+      "group": "旗杆条件",
+      "type": "int",
+      "min": 30,
+      "max": 60,
+      "default": 45
+    },
+    "FLAG_MAX_RETRACE": {
+      "value": 0.25,
+      "display_name": "旗面最大回调",
+      "description": "旗面整理期间最大回调幅度比例",
+      "group": "旗面条件",
+      "type": "float",
+      "min": 0.15,
+      "max": 0.35,
+      "step": 0.05,
+      "default": 0.25
+    },
+    "FLAG_MIN_RETRACE": {
+      "value": 0.1,
+      "display_name": "旗面最小回调",
+      "description": "旗面整理期间最小回调幅度比例",
+      "group": "旗面条件",
+      "type": "float",
+      "min": 0.05,
+      "max": 0.15,
+      "step": 0.01,
+      "default": 0.1
+    },
+    "FLAG_MAX_DAYS": {
+      "value": 28,
+      "display_name": "旗面最大天数",
+      "description": "旗面整理的最大交易日数",
+      "group": "旗面条件",
+      "type": "int",
+      "min": 20,
+      "max": 40,
+      "default": 28
+    },
+    "FLAG_MIN_DAYS": {
+      "value": 10,
+      "display_name": "旗面最小天数",
+      "description": "旗面整理的最少交易日数",
+      "group": "旗面条件",
+      "type": "int",
+      "min": 7,
+      "max": 15,
+      "default": 10
+    },
+    "MIN_VOLUME_RATIO": {
+      "value": 1.5,
+      "display_name": "最小成交量倍数",
+      "description": "突破日成交量相对于旗面均量的最小倍数",
+      "group": "量能条件",
+      "type": "float",
+      "min": 1.2,
+      "max": 2.0,
+      "step": 0.1,
+      "default": 1.5
+    }
+  }
+}

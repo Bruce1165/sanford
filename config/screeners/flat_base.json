@@ -1,0 +1,99 @@
+{
+  "display_name": "平底形态",
+  "description": "识别平底形态：股价横向整理波动幅度≤15%，收盘价集中在区间中部30%-70%，突破放量为买入信号。欧奈尔认为平底是杯柄形态变体。",
+  "category": "经典公式",
+  "metadata": {
+    "version": "v1.0",
+    "created": "2026-04-04",
+    "updated_at": "2026-04-17",
+    "updated_by": "fix_3types"
+  },
+  "parameters": {
+    "MIN_BASE_DAYS": {
+      "value": 25,
+      "display_name": "最小整理天数",
+      "description": "平底整理的最少交易日数",
+      "group": "基础设置",
+      "type": "int",
+      "min": 15,
+      "max": 60,
+      "default": 25
+    },
+    "MAX_BASE_DAYS": {
+      "value": 35,
+      "display_name": "最大整理天数",
+      "description": "平底整理的最多交易日数",
+      "group": "基础设置",
+      "type": "int",
+      "min": 25,
+      "max": 60,
+      "default": 35
+    },
+    "MAX_RANGE_PCT": {
+      "value": 0.15,
+      "display_name": "最大波动幅度",
+      "description": "整理期间允许的最大波动幅度比例",
+      "group": "形态条件",
+      "type": "float",
+      "min": 0.1,
+      "max": 0.25,
+      "step": 0.01,
+      "default": 0.15
+    },
+    "MIN_BREAKOUT_PCT": {
+      "value": 0.03,
+      "display_name": "最小突破幅度",
+      "description": "收盘价突破区间高点的最小幅度",
+      "group": "突破条件",
+      "type": "float",
+      "min": 0.02,
+      "max": 0.05,
+      "step": 0.005,
+      "default": 0.03
+    },
+    "MIN_VOLUME_RATIO": {
+      "value": 1.5,
+      "display_name": "最小成交量倍数",
+      "description": "突破日成交量相对于整理期均量的最小倍数",
+      "group": "量能条件",
+      "type": "float",
+      "min": 1.2,
+      "max": 2.0,
+      "step": 0.1,
+      "default": 1.5
+    },
+    "MIN_POSITION": {
+      "value": 0.3,
+      "display_name": "最小平均位置",
+      "description": "收盘价在区间中的最小平均位置比例",
+      "group": "形态条件",
+      "type": "float",
+      "min": 0.2,
+      "max": 0.5,
+      "step": 0.05,
+      "default": 0.3
+    },
+    "MAX_POSITION": {
+      "value": 0.7,
+      "display_name": "最大平均位置",
+      "description": "收盘价在区间中的最大平均位置比例",
+      "group": "形态条件",
+      "type": "float",
+      "min": 0.5,
+      "max": 0.8,
+      "step": 0.05,
+      "default": 0.7
+    },
+    "SLOPE_TOLERANCE": {
+      "value": 0.5,
+      "display_name": "斜率容忍度",
+      "description": "允许的线性回归斜率相对于波动幅度的最大比例",
+      "group": "形态条件",
+      "type": "float",
+      "min": 0.3,
+      "max": 0.7,
+      "step": 0.05,
+      "default": 0.5
+    }
+  }
+}

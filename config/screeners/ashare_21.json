@@ -1,0 +1,36 @@
+{
+  "display_name": "A股2.1综合选股",
+  "description": "综合21个技术指标进行多维度选股，包括趋势、成交量、形态、资金流向等维度，输出综合评分最高的股票。",
+  "category": "经典公式",
+  "metadata": {
+    "version": "v1.0",
+    "created": "2026-04-04",
+    "updated_at": "2026-04-17",
+    "updated_by": "fix_3types"
+  },
+  "parameters": {
+    "LOOKBACK_DAYS": {
+      "value": 20,
+      "display_name": "分析周期（交易日）",
+      "description": "回溯分析的历史数据天数",
+      "group": "基础设置",
+      "type": "int",
+      "min": 5,
+      "max": 60,
+      "default": 20,
+      "step": 5
+    },
+    "MIN_SCORE": {
+      "value": 60,
+      "display_name": "最低综合评分",
+      "description": "股票必须达到的最低综合评分（0-100）",
+      "group": "评分条件",
+      "category": "经典公式",
+      "type": "int",
+      "min": 0,
+      "max": 100,
+      "default": 60,
+      "step": 5
+    }
+  }
+}
