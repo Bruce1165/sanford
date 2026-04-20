@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Excel Upload Field Mapping</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@400;700&display=swap');
+
+        body {
+            font-family: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            font-size: 12pt;
+            line-height: 1.6;
+            color: #333;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 40px;
+            background: white;
+        }
+
+        h1 {
+            font-family: 'Noto Serif SC', 'PingFang SC', serif;
+            font-size: 24pt;
+            font-weight: 700;
+            color: #1a1a1a;
+            margin-top: 0;
+            margin-bottom: 20px;
+            border-bottom: 3px solid #2563eb;
+            padding-bottom: 10px;
+        }
+
+        h2 {
+            font-family: 'Noto Serif SC', 'PingFang SC', serif;
+            font-size: 16pt;
+            font-weight: 700;
+            color: #1e40af;
+            margin-top: 24px;
+            margin-bottom: 12px;
+            border-bottom: 1px solid #e5e7eb;
+            padding-bottom: 6px;
+        }
+
+        h3 {
+            font-size: 13pt;
+            font-weight: 600;
+            color: #1f2937;
+            margin-top: 20px;
+            margin-bottom: 10px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+            font-size: 9pt;
+            page-break-inside: avoid;
+        }
+
+        th {
+            background-color: #f3f4f6;
+            font-weight: 600;
+            color: #1f2937;
+            padding: 8px 12px;
+            text-align: left;
+            border: 1px solid #d1d5db;
+        }
+
+        td {
+            padding: 6px 12px;
+            border: 1px solid #e5e7eb;
+        }
+
+        code {
+            font-family: 'Monaco', 'Courier New', monospace;
+            background-color: #f3f4f6;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 9pt;
+            color: #dc2626;
+        }
+
+        pre {
+            background-color: #1f2937;
+            color: #e5e7eb;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            margin: 15px 0;
+            font-size: 8pt;
+        }
+
+        pre code {
+            background-color: transparent;
+            color: #e5e7eb;
+            padding: 0;
+        }
+
+        ul, ol {
+            margin: 10px 0;
+            padding-left: 25px;
+        }
+
+        li {
+            margin: 5px 0;
+        }
+
+        strong {
+            color: #1e40af;
+            font-weight: 600;
+        }
+
+        @media print {
+            body {
+                padding: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+<h1>Excel Upload Field Mapping Document</h1>
+<h2>File Information</h2>
+<ul>
+<li><strong>File Format</strong>: Tab-delimited text file (<code>.xls</code> extension, but actually TSV)</li>
+<li><strong>Encoding</strong>: GBK</li>
+<li><strong>Date Source</strong>: Extracted from filename (format: <code>全部Ａ股YYYYMMDD.xls</code>)</li>
+<li><strong>Stock Coverage</strong>: All A-shares (includes ST, indices, Beijing Exchange)</li>
+<li><strong>Purpose</strong>: Update daily stock data (overwrite existing data for the same date)</li>
+</ul>
+<hr />
+<h2>Table 1: Daily Price Data (<code>daily_prices</code> table)</h2>
+<table>
+<thead>
+<tr>
+<th>Excel Column</th>
+<th>DB Field</th>
+<th>Data Type</th>
+<th>Conversion Logic</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>代码</strong></td>
+<td><code>code</code></td>
+<td>VARCHAR(10)</td>
+<td>Remove <code>="</code> and <code>"</code>, keep 6 digits</td>
+<td>Example: <code>="301683"</code> → <code>301683</code></td>
+</tr>
+<tr>
+<td><strong>今开</strong></td>
+<td><code>open</code></td>
+<td>FLOAT</td>
+<td>Convert string to float</td>
+<td></td>
+</tr>
+<tr>
+<td><strong>最高</strong></td>
+<td><code>high</code></td>
+<td>FLOAT</td>
+<td>Convert string to float</td>
+<td></td>
+</tr>
+<tr>
+<td><strong>最低</strong></td>
+<td><code>low</code></td>
+<td>FLOAT</td>
+<td>Convert string to float</td>
+<td></td>
+</tr>
+<tr>
+<td><strong>现价</strong></td>
+<td><code>close</code></td>
+<td>FLOAT</td>
+<td>Convert string to float</td>
+<td></td>
+</tr>
+<tr>
+<td><strong>昨收</strong></td>
+<td><code>preclose</code></td>
+<td>FLOAT</td>
+<td>Convert string to float</td>
+<td></td>
+</tr>
+<tr>
+<td><strong>涨幅%</strong></td>
+<td><code>pct_change</code></td>
+<td>FLOAT</td>
+<td>Convert string to float</td>
+<td></td>
+</tr>
+<tr>
+<td><strong>总量</strong></td>
+<td><code>volume</code></td>
+<td>FLOAT</td>
+<td>Use as-is (already in "手")</td>
+<td>DB stores volume in "手", not shares</td>
+</tr>
+<tr>
+<td><strong>总金额</strong></td>
+<td><code>amount</code></td>
+<td>FLOAT</td>
+<td>Multiply by 10,000 (convert from "万元" to yuan)</td>
+<td>1万元 = 10,000 yuan</td>
+</tr>
+<tr>
+<td><strong>换手%</strong></td>
+<td><code>turnover</code></td>
+<td>FLOAT</td>
+<td>Convert string to float</td>
+<td>Already in percentage</td>
+</tr>
+<tr>
+<td><strong>Filename</strong></td>
+<td><code>trade_date</code></td>
+<td>DATE</td>
+<td>Extract from filename, format as YYYY-MM-DD</td>
+<td><code>全部Ａ股20260401.xls</code> → <code>2026-04-01</code></td>
+</tr>
+<tr>
+<td></td>
+<td><code>updated_at</code></td>
+<td>DATETIME</td>
+<td>Set to current timestamp</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h3>Special Handling:</h3>
+<ul>
+<li><strong>NULL values</strong>: <code>--</code> → convert to NULL</li>
+<li><strong>Invalid numbers</strong>: Skip record, log warning</li>
+</ul>
+<hr />
+<h2>Table 2: Stock Metadata (<code>stocks</code> table)</h2>
+<table>
+<thead>
+<tr>
+<th>Excel Column</th>
+<th>DB Field</th>
+<th>Data Type</th>
+<th>Conversion Logic</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>代码</strong></td>
+<td><code>code</code></td>
+<td>VARCHAR(10)</td>
+<td>Remove <code>="</code> and <code>"</code>, keep 6 digits</td>
+<td>Primary key</td>
+</tr>
+<tr>
+<td><strong>名称</strong></td>
+<td><code>name</code></td>
+<td>VARCHAR(50)</td>
+<td>Trim whitespace</td>
+<td></td>
+</tr>
+<tr>
+<td><strong>一二级行业</strong></td>
+<td><code>sector_lv1</code>, <code>sector_lv2</code></td>
+<td>VARCHAR(50)</td>
+<td>Split by <code>-</code>: first part → <code>sector_lv1</code>, second part → <code>sector_lv2</code></td>
+<td>Format: <code>一级行业-二级行业</code></td>
+</tr>
+<tr>
+<td><strong>细分行业</strong></td>
+<td><code>industry</code></td>
+<td>VARCHAR(50)</td>
+<td>Use as-is</td>
+<td></td>
+</tr>
+<tr>
+<td><strong>地区</strong></td>
+<td><code>area</code></td>
+<td>VARCHAR(50)</td>
+<td>Use as-is</td>
+<td></td>
+</tr>
+<tr>
+<td><strong>上市日期</strong></td>
+<td><code>list_date</code></td>
+<td>DATE</td>
+<td>Format as YYYY-MM-DD</td>
+<td><code>20260401</code> → <code>2026-04-01</code></td>
+</tr>
+<tr>
+<td><strong>总市值</strong></td>
+<td><code>total_market_cap</code></td>
+<td>REAL</td>
+<td>Remove "亿", multiply by 100,000,000</td>
+<td><code>"79.97亿"</code> → <code>7997000000.0</code></td>
+</tr>
+<tr>
+<td><strong>流通市值</strong></td>
+<td><code>circulating_market_cap</code></td>
+<td>REAL</td>
+<td>Remove "亿", multiply by 100,000,000</td>
+<td><code>"18.08亿"</code> → <code>1808000000.0</code></td>
+</tr>
+<tr>
+<td><strong>市盈(动)</strong></td>
+<td><code>pe_ratio</code></td>
+<td>REAL</td>
+<td>Convert string to float, <code>"--"</code> → NULL</td>
+<td></td>
+</tr>
+<tr>
+<td><strong>市净率</strong></td>
+<td><code>pb_ratio</code></td>
+<td>REAL</td>
+<td>Convert string to float, <code>"--"</code> → NULL</td>
+<td></td>
+</tr>
+<tr>
+<td></td>
+<td><code>updated_at</code></td>
+<td>DATETIME</td>
+<td>Set to current timestamp</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h3>Fields NOT in Excel (keep existing values):</h3>
+<ul>
+<li><code>roe</code>, <code>debt_ratio</code>, <code>revenue</code>, <code>profit</code> - financial metrics (not in upload)</li>
+<li><code>ifind_updated_at</code> - obsoleted field (not in upload)</li>
+<li><code>is_delisted</code> - status flag (not in upload)</li>
+<li><code>last_trade_date</code> - last trading date (not in upload)</li>
+<li><code>asset_type</code> - default 'stock'</li>
+</ul>
+<hr />
+<h2>Table 3: Stock Meta (<code>stock_meta</code> table)</h2>
+<table>
+<thead>
+<tr>
+<th>Excel Column</th>
+<th>DB Field</th>
+<th>Data Type</th>
+<th>Conversion Logic</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>代码</strong></td>
+<td><code>code</code></td>
+<td>VARCHAR(10)</td>
+<td>Remove <code>="</code> and <code>"</code>, keep 6 digits</td>
+<td>Primary key</td>
+</tr>
+<tr>
+<td><strong>名称</strong></td>
+<td><code>name</code></td>
+<td>VARCHAR(50)</td>
+<td>Trim whitespace</td>
+<td></td>
+</tr>
+<tr>
+<td><strong>一二级行业</strong></td>
+<td><code>sector_lv1</code>, <code>sector_lv2</code></td>
+<td>VARCHAR(50)</td>
+<td>Split by <code>-</code>: first part → <code>sector_lv1</code>, second part → <code>sector_lv2</code></td>
+<td>Format: <code>一级行业-二级行业</code></td>
+</tr>
+<tr>
+<td><strong>细分行业</strong></td>
+<td><code>industry</code></td>
+<td>VARCHAR(50)</td>
+<td>Use as-is</td>
+<td></td>
+</tr>
+<tr>
+<td><strong>地区</strong></td>
+<td><code>area</code></td>
+<td>VARCHAR(50)</td>
+<td>Use as-is</td>
+<td></td>
+</tr>
+<tr>
+<td><strong>上市日期</strong></td>
+<td><code>list_date</code></td>
+<td>DATE</td>
+<td>Format as YYYY-MM-DD</td>
+<td></td>
+</tr>
+<tr>
+<td></td>
+<td><code>asset_type</code></td>
+<td>VARCHAR(10)</td>
+<td>Set to 'stock'</td>
+<td>Default value</td>
+</tr>
+<tr>
+<td></td>
+<td><code>is_delisted</code></td>
+<td>INTEGER</td>
+<td>Keep existing value (not in upload)</td>
+<td></td>
+</tr>
+<tr>
+<td></td>
+<td><code>meta_source</code></td>
+<td>VARCHAR(20)</td>
+<td>Set to 'excel_upload'</td>
+<td>New source type</td>
+</tr>
+<tr>
+<td></td>
+<td><code>updated_at</code></td>
+<td>DATETIME</td>
+<td>Set to current timestamp</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h3>Fields NOT in Excel (keep existing values):</h3>
+<ul>
+<li><code>out_date</code> - delisting date</li>
+<li><code>checksum</code>, <code>checked_at</code> - validation fields</li>
+</ul>
+<hr />
+<h2>Data Conversion Rules</h2>
+<h3>1. Stock Code Cleaning</h3>
+<pre><code>Excel: =&quot;301683&quot;
+DB:    301683
+</code></pre>
+<h3>2. Amount Conversion (Yuan)</h3>
+<pre><code>Excel: 147411.19  (in &quot;万元&quot;)
+DB:    1474111900.0  (in yuan)
+Formula: float(value) * 10,000
+</code></pre>
+<h3>3. Market Cap Conversion (Yuan)</h3>
+<pre><code>Excel: &quot;79.97亿&quot;
+DB:    7997000000.0
+Formula: float(remove_bai(value)) * 100,000,000
+</code></pre>
+<h3>3. Volume Conversion (No conversion needed)</h3>
+<pre><code>Excel: 108230.0  (in &quot;手&quot;)
+DB:    108230.0  (in &quot;手&quot;)
+Formula: Use as-is (DB stores volume in &quot;手&quot;)
+</code></pre>
+<h3>4. Sector Field Parsing</h3>
+<pre><code>Excel: &quot;可选消费-医药&quot;
+DB:    sector_lv1='可选消费', sector_lv2='医药'
+Formula: split(value, '-')
+</code></pre>
+<h3>6. Date Extraction</h3>
+<pre><code>Filename: 全部Ａ股20260401.xls
+DB Date:  2026-04-01
+Pattern:  全部Ａ股(\d{8})\.xls
+</code></pre>
+<h3>7. Null Value Handling</h3>
+<pre><code>Excel: &quot;--&quot; (common for PE/PB ratios)
+DB:    NULL (None in Python)
+</code></pre>
+<h3>8. Type Conversions</h3>
+<pre><code>Excel String → DB Float:
+  &quot;61.66&quot;  → 61.66
+  &quot;126.71&quot; → 126.71
+  &quot;20.01&quot;  → 20.01
+</code></pre>
+<hr />
+<h2>Upload Workflow</h2>
+<h3>Step 1: File Validation</h3>
+<ul>
+<li>[ ] File name matches pattern: <code>全部Ａ股YYYYMMDD.xls</code></li>
+<li>[ ] File can be read with GBK encoding, tab delimiter</li>
+<li>[ ] File has required columns (code, name, open, high, low, close, preclose, pct_change, volume, amount, turnover)</li>
+<li>[ ] Date from filename is valid</li>
+</ul>
+<h3>Step 2: Data Parsing</h3>
+<ul>
+<li>[ ] Read file with pandas (encoding='gbk', delimiter='\t')</li>
+<li>[ ] Clean stock codes (remove <code>="</code> and <code>"</code>)</li>
+<li>[ ] Convert data types (string → float/int/date)</li>
+<li>[ ] Handle "--" as NULL</li>
+<li>[ ] Extract trade_date from filename</li>
+</ul>
+<h3>Step 3: Data Validation</h3>
+<ul>
+<li>[ ] Validate required fields (no NULL in critical columns)</li>
+<li>[ ] Validate numeric ranges (e.g., prices &gt; 0, volume &gt;= 0)</li>
+<li>[ ] Count valid vs invalid records</li>
+<li>[ ] If error rate &gt; threshold, reject entire upload</li>
+</ul>
+<h3>Step 4: Database Update</h3>
+<ul>
+<li>[ ] Begin transaction</li>
+<li>[ ] Insert/Update <code>daily_prices</code> for the trade_date</li>
+<li>Use <code>INSERT OR REPLACE</code> to handle duplicates</li>
+<li>[ ] Update <code>stocks</code> metadata</li>
+<li>Use <code>INSERT OR REPLACE</code> to update existing stocks</li>
+<li>Insert new stocks if they don't exist</li>
+<li>[ ] Update <code>stock_meta</code> metadata</li>
+<li>Use <code>INSERT OR REPLACE</code> to update existing stocks</li>
+<li>Insert new stocks if they don't exist</li>
+<li>[ ] Commit transaction (rollback on error)</li>
+</ul>
+<h3>Step 5: Summary Report</h3>
+<ul>
+<li>[ ] Total records processed</li>
+<li>[ ] Records inserted/updated successfully</li>
+<li>[ ] Records skipped/failed</li>
+<li>[ ] Warnings and errors</li>
+</ul>
+<hr />
+<h2>Error Handling</h2>
+<h3>File-Level Errors (Reject Upload)</h3>
+<ul>
+<li>Invalid file name format</li>
+<li>Cannot read file (wrong encoding or format)</li>
+<li>Missing required columns</li>
+<li>Invalid date in filename</li>
+</ul>
+<h3>Record-Level Errors (Skip Record, Log Warning)</h3>
+<ul>
+<li>Missing required fields (code, open, high, low, close)</li>
+<li>Invalid numeric values (cannot convert to float)</li>
+<li>Negative prices or volume</li>
+<li>Invalid stock code format</li>
+</ul>
+<h3>Validation Thresholds</h3>
+<ul>
+<li><strong>Error rate &gt; 5%</strong>: Reject entire upload</li>
+<li><strong>Error rate 1-5%</strong>: Show warning, allow upload</li>
+<li><strong>Error rate &lt; 1%</strong>: Proceed normally</li>
+</ul>
+<hr />
+<h2>Sample Records</h2>
+<h3>Daily Prices Example:</h3>
+<pre><code>Excel Row:
+  代码=&quot;301683&quot;, 名称=N慧谷, 涨幅%=61.66, 现价=126.71, 今开=128.00,
+  最高=158.00, 最低=126.00, 昨收=78.38, 总量=108230.0,
+  总金额=147411.19, 换手%=75.87
+
+DB Insert (daily_prices):
+  code: '301683'
+  trade_date: '2026-04-01'
+  open: 128.0
+  high: 158.0
+  low: 126.0
+  close: 126.71
+  preclose: 78.38
+  pct_change: 61.66
+  volume: 108230.0  (in &quot;手&quot;, stored as-is)
+  amount: 1474111900.0  (147411.19 * 10,000, in yuan)
+  turnover: 75.87
+  updated_at: '2026-04-03 16:30:00'
+</code></pre>
+<h3>Stock Metadata Example:</h3>
+<pre><code>Excel Row:
+  代码=&quot;301683&quot;, 名称=N慧谷, 一二级行业=可选消费-医药, 细分行业=染料涂料, 地区=,
+  上市日期=20260401, 总市值=79.97亿, 流通市值=18.08亿,
+  市盈(动)=38.68, 市净率=3.46
+
+DB Insert/Update (stocks):
+  code: '301683'
+  name: 'N慧谷'
+  sector_lv1: '可选消费'  (parsed from &quot;可选消费-医药&quot;)
+  sector_lv2: '医药'  (parsed from &quot;可选消费-医药&quot;)
+  industry: '染料涂料'
+  area: NULL
+  list_date: '2026-04-01'
+  total_market_cap: 7997000000.0  (79.97 * 100,000,000)
+  circulating_market_cap: 1808000000.0  (18.08 * 100,000,000)
+  pe_ratio: 38.68
+  pb_ratio: 3.46
+  updated_at: '2026-04-03 16:30:00'
+</code></pre>
+<hr />
+<h2>Implementation Notes</h2>
+<ol>
+<li>
+<p><strong>No Stock Code Validation</strong>: Do not check if stock exists in DB before inserting. New stocks (newly listed) will be inserted automatically.</p>
+</li>
+<li>
+<p><strong>Data Preservation</strong>: Existing data for dates NOT in the upload file will be preserved. Only the specific trade_date from the upload file is updated.</p>
+</li>
+<li>
+<p><strong>All Stocks Included</strong>: Upload file includes ST stocks, indices, Beijing Exchange stocks. All should be uploaded to DB, but screeners will filter them out via <code>StockFilter</code> class.</p>
+</li>
+<li>
+<p><strong>Units Consistency</strong>: Ensure all numeric values are converted to match DB storage format:</p>
+</li>
+<li>Volume: "手" (store as-is)</li>
+<li>Amount: "万元" → yuan (multiply by 10,000)</li>
+<li>
+<p>Market Cap: "亿" → yuan (multiply by 100,000,000)</p>
+</li>
+<li>
+<p><strong>Transaction Safety</strong>: Use database transaction to ensure all-or-nothing update. If any step fails, rollback all changes.</p>
+</li>
+<li>
+<p><strong>Trading Calendar</strong>: Keep BaoStock integration for trading day validation and calendar management. The upload file's date should be validated against BaoStock trading calendar to ensure it's a valid trading day.</p>
+</li>
+</ol>
+<hr />
+<h2>Question for Confirmation</h2>
+<ol>
+<li>✅ Market cap conversion: <code>"79.97亿"</code> → <code>7997000000.0</code> (multiply by 100,000,000)</li>
+<li>✅ Volume conversion: <code>108230.0</code> (手) → <code>108230.0</code> (store as-is, DB uses "手")</li>
+<li>✅ Amount conversion: <code>147411.19</code> (万元) → <code>1474111900.0</code> (multiply by 10,000 to get yuan)</li>
+<li>✅ Date: Extract from filename format <code>全部Ａ股YYYYMMDD.xls</code></li>
+<li>✅ Existing data: Keep all, only overwrite for the specific trade_date</li>
+<li>✅ Stock code: No validation, allow new stocks</li>
+<li>✅ Error handling: Reject file if invalid, skip records with warnings</li>
+<li>✅ Trading calendar: Keep BaoStock for trading day validation</li>
+</ol>
+<p><strong>Please confirm this mapping is correct before I proceed with implementation.</strong></p>
+</body>
+</html>

@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>欧奈尔杯柄形态选股系统技术白皮书</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<h1
+id="欧奈尔杯柄形态选股系统技术白皮书">欧奈尔杯柄形态选股系统技术白皮书</h1>
+<h2 id="欧奈尔杯柄形态-canslim-选股系统">欧奈尔杯柄形态 (CANSLIM)
+选股系统</h2>
+<hr />
+<h2 id="一系统概述">一、系统概述</h2>
+<h3 id="策略来源">1.1 策略来源</h3>
+<p>本系统基于<strong>威廉·欧奈尔 (William J. O’Neil)</strong> 的 CANSLIM
+投资体系，特别是其中的杯柄形态 (Cup and Handle Pattern)
+选股法则。欧奈尔通过对 1880-2008
+年间美国股市的深入研究，总结出这一高胜率的中长线形态识别方法。</p>
+<h3 id="核心思想">1.2 核心思想</h3>
+<p>杯柄形态代表股票的<strong>筑底→洗盘→突破</strong>完整周期： -
+<strong>杯体 (Cup)</strong>：股价下跌后逐步回升，形成U型底部 -
+<strong>杯柄 (Handle)</strong>：在杯体右侧高点附近小幅回调，清洗浮筹 -
+<strong>突破 (Breakout)</strong>：放量突破柄部高点，开启主升浪</p>
+<h3 id="系统特点">1.3 系统特点</h3>
+<table>
+<thead>
+<tr>
+<th>特性</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>标准化</strong></td>
+<td>严格遵循欧奈尔原版参数</td>
+</tr>
+<tr>
+<td><strong>可视化</strong></td>
+<td>Dashboard 直观展示筛选结果</td>
+</tr>
+<tr>
+<td><strong>可验证</strong></td>
+<td>支持单只股票即时检查</td>
+</tr>
+<tr>
+<td><strong>风控集成</strong></td>
+<td>自动生成止损位和目标位</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="二形态定义与参数标准">二、形态定义与参数标准</h2>
+<h3 id="杯体参数-cup">2.1 杯体参数 (Cup)</h3>
+<pre><code>┌─────────────────────────────────────────┐
+│              杯沿 (Cup Rim)              │
+│                   ▲                      │
+│                  / │                     │
+│                 /  │                     │
+│                /   │  杯深 12%-35%       │
+│               /    │                     │
+│              /     │                     │
+│             ▼      │                     │
+│        杯底 (Cup Bottom)                 │
+│          ▲         │                     │
+│         / │        │                     │
+│        /  │        │                     │
+│       /   └────────┘                     │
+│      /                                   │
+│     ▼                                    │
+│  杯沿 (Cup Rim)                          │
+└─────────────────────────────────────────┘</code></pre>
+<p><strong>标准参数：</strong></p>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>取值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>杯体周期</strong></td>
+<td>50-60 天</td>
+<td>2.5-3个月形成完整杯体</td>
+</tr>
+<tr>
+<td><strong>杯深范围</strong></td>
+<td>12% - 35%</td>
+<td>回调幅度</td>
+</tr>
+<tr>
+<td><strong>杯型要求</strong></td>
+<td>U 型</td>
+<td>最低点在 30%-70% 中部区域</td>
+</tr>
+<tr>
+<td><strong>排除 V 型</strong></td>
+<td>&lt;30% 或 &gt;70%</td>
+<td>尖锐底部视为假形态</td>
+</tr>
+</tbody>
+</table>
+<h3 id="柄部参数-handle">2.2 柄部参数 (Handle)</h3>
+<pre><code>                    突破点
+                       ▲
+                      /│\
+                     / │ \   ← 杯沿
+                    /  │  \
+                   /   │   \
+              ────┐    │    ┌────
+     柄部高点 →   │    │    │  ← 柄部回调 5%-12%
+                  │    │    │
+                  └────┴────┘
+                       │
+                       ▼
+                   柄部低点</code></pre>
+<p><strong>标准参数：</strong></p>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>取值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>柄部周期</strong></td>
+<td>15-20 天</td>
+<td>3-4周形成柄部</td>
+</tr>
+<tr>
+<td><strong>柄调幅度</strong></td>
+<td>5% - 12%</td>
+<td>回调幅度</td>
+</tr>
+<tr>
+<td><strong>成交量</strong></td>
+<td>&lt;85%</td>
+<td>柄部缩量（洗盘特征）</td>
+</tr>
+<tr>
+<td><strong>突破确认</strong></td>
+<td>&gt;柄部高点</td>
+<td>收盘价突破</td>
+</tr>
+</tbody>
+</table>
+<h3 id="均线过滤器">2.3 均线过滤器</h3>
+<pre><code>价格
+▲
+│          ╱‾‾‾‾‾‾‾‾╲   ← MA50 (短期)
+│        ╱            ╲
+│      ╱                ╲____
+│    ╱    ╱‾‾‾‾‾‾‾‾╲          ╲___  ← MA150 (中期)
+│  ╱    ╱              ╲             ╲
+│╱____╱                  ╲________________  ← MA200 (长期)
+└──────────────────────────────────────────▶ 时间</code></pre>
+<p><strong>多头排列要求：</strong> - MA50 &gt; MA150 &gt; MA200 - MA200
+向上（5日斜率&gt;0）</p>
+<h3 id="相对强度-rs-过滤器">2.4 相对强度 (RS) 过滤器</h3>
+<pre><code>RS 分数分布
+
+99 │                    ★ 强势股区域
+   │                  ╱
+85 │───────────────●────── 入选门槛
+   │            ╱
+70 │         ╱
+   │       ╱
+50 │─────●──────────────── 市场平均
+   │   ╱
+30 │ ╱
+   │╱
+ 1 └────────────────────────
+    弱        中        强</code></pre>
+<p><strong>RS 计算：</strong> - 过去 12 个月涨幅 vs 市场基准 -
+入选门槛：RS ≥ 85（超越 85% 个股）</p>
+<hr />
+<h2 id="三完整选股流程">三、完整选股流程</h2>
+<h3 id="流程图">3.1 流程图</h3>
+<pre><code>┌─────────────────────────────────────────────────────┐
+│                  开始选股流程                        │
+└─────────────────────┬───────────────────────────────┘
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│  1. 基础条件筛选                                    │
+│     ├── 换手率 ≥ 5%                                │
+│     ├── 涨幅 ≥ 2%                                  │
+│     └── 量比 ≥ 2 倍（放量）                        │
+└─────────────────────┬───────────────────────────────┘
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│  2. 杯体识别                                        │
+│     ├── 周期：50-60 天                             │
+│     ├── 杯深：12%-35%                              │
+│     └── 形状：U 型（最低点中部 30%-70%）           │
+└─────────────────────┬───────────────────────────────┘
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│  3. 柄部识别                                        │
+│     ├── 周期：15-20 天                             │
+│     ├── 回调：5%-12%                               │
+│     ├── 缩量：&lt;85%                                 │
+│     └── 突破：收盘价 &gt; 柄部高点                    │
+└─────────────────────┬───────────────────────────────┘
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│  4. 趋势验证                                        │
+│     ├── MA50 &gt; MA150 &gt; MA200（多头排列）           │
+│     └── MA200 向上（长期趋势）                     │
+└─────────────────────┬───────────────────────────────┘
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│  5. 强度验证                                        │
+│     └── RS ≥ 85（超越 85% 个股）                   │
+└─────────────────────┬───────────────────────────────┘
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│  6. 风控计算                                        │
+│     ├── 止损位 = 柄部低点 × 0.97                   │
+│     ├── 目标位 1 = 突破价 + 杯深                   │
+│     └── 目标位 2 = 突破价 + 1.5 × 杯深             │
+└─────────────────────┬───────────────────────────────┘
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│              输出选股结果 + 风控建议                │
+└─────────────────────────────────────────────────────┘</code></pre>
+<h3 id="单只股票检查示例">3.2 单只股票检查示例</h3>
+<p><strong>输入：</strong> 股票代码 600XXX，日期 2026-03-17</p>
+<p><strong>输出报告：</strong></p>
+<pre><code>┌────────────────────────────────────────────────┐
+│  欧奈尔杯柄形态检查结果                        │
+├────────────────────────────────────────────────┤
+│  股票: 600XXX 某某科技                         │
+│  状态: ✅ 符合欧奈尔标准                       │
+├────────────────────────────────────────────────┤
+│  📊 形态指标                                   │
+│  ├── 杯深: 22.5% ✓ (12%-35%)                 │
+│  ├── 柄调: 8.2% ✓ (5%-12%)                   │
+│  ├── 柄部缩量: 78% ✓ (&lt;85%)                  │
+│  ├── U型验证: ✓ 最低点在杯身52%处            │
+│  └── 突破幅度: 3.8%                          │
+├────────────────────────────────────────────────┤
+│  📈 趋势指标                                   │
+│  ├── MA50: 25.80                             │
+│  ├── MA150: 23.50                            │
+│  ├── MA200: 21.20 ↑                          │
+│  ├── 均线排列: ✓ 多头排列                    │
+│  └── RS分数: 88 ✓ 强势股                     │
+├────────────────────────────────────────────────┤
+│  📊 基础指标                                   │
+│  ├── 换手率: 8.5%                            │
+│  ├── 涨幅: 5.2%                              │
+│  └── 量比: 2.8倍                             │
+├────────────────────────────────────────────────┤
+│  ⚠️ 风控建议                                   │
+│  ├── 止损位: 24.20 (跌破-5.8%)               │
+│  ├── 目标位1: 28.50 (+10.5%)                 │
+│  ├── 目标位2: 31.80 (+23.4%)                 │
+│  └── 盈亏比: 1:1.8                           │
+└────────────────────────────────────────────────┘</code></pre>
+<hr />
+<h2 id="四不同市场环境参数建议">四、不同市场环境参数建议</h2>
+<h3 id="参数对照表">4.1 参数对照表</h3>
+<table>
+<colgroup>
+<col style="width: 13%" />
+<col style="width: 13%" />
+<col style="width: 13%" />
+<col style="width: 13%" />
+<col style="width: 13%" />
+<col style="width: 13%" />
+<col style="width: 18%" />
+</colgroup>
+<thead>
+<tr>
+<th>市场环境</th>
+<th>杯体周期</th>
+<th>柄部周期</th>
+<th>杯深范围</th>
+<th>柄调范围</th>
+<th>缩量比例</th>
+<th>预期选股数量</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>熊市/弱市</strong></td>
+<td>60-80天</td>
+<td>20-25天</td>
+<td>15%-30%</td>
+<td>5%-10%</td>
+<td>70%-80%</td>
+<td>0-2只</td>
+</tr>
+<tr>
+<td><strong>震荡市</strong> ⭐</td>
+<td>50-60天</td>
+<td>15-20天</td>
+<td>12%-35%</td>
+<td>5%-12%</td>
+<td>80%-85%</td>
+<td>0-5只</td>
+</tr>
+<tr>
+<td><strong>牛市/强市</strong></td>
+<td>30-40天</td>
+<td>10-15天</td>
+<td>10%-40%</td>
+<td>3%-15%</td>
+<td>90%-100%</td>
+<td>5-20只</td>
+</tr>
+</tbody>
+</table>
+<p>⭐ <strong>推荐使用：震荡市参数</strong>（当前系统默认）</p>
+<h3 id="参数调整说明">4.2 参数调整说明</h3>
+<pre><code>严格程度调整
+
+保守 ←────────────────────────→ 激进
+
+杯体: 60-80天                    30-40天
+      ↑                          ↑
+   要求更长筑底              允许快速形态
+
+柄调: 5%-10%                    3%-15%
+      ↑                          ↑
+   要求充分洗盘              允许浅回调
+
+缩量: 70%-80%                   90%-100%
+      ↑                          ↑
+   要求明显缩量              允许正常量</code></pre>
+<hr />
+<h2 id="五风控体系">五、风控体系</h2>
+<h3 id="自动风控计算">5.1 自动风控计算</h3>
+<p><strong>计算公式：</strong></p>
+<pre><code>止损位 = 柄部最低点 × 0.97
+
+目标位1 = 突破价格 + 杯体深度
+目标位2 = 突破价格 + 1.5 × 杯体深度
+
+盈亏比 = (目标位 - 突破价) / (突破价 - 止损位)</code></pre>
+<h3 id="风险控制原则">5.2 风险控制原则</h3>
+<table>
+<thead>
+<tr>
+<th>原则</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>硬性止损</strong></td>
+<td>跌破止损位立即出场，不犹豫</td>
+</tr>
+<tr>
+<td><strong>移动止盈</strong></td>
+<td>浮盈 &gt;20% 后，以 10 日均线作为跟踪止损</td>
+</tr>
+<tr>
+<td><strong>时间止损</strong></td>
+<td>10 天未达目标 1，减半仓；20 天强制清仓</td>
+</tr>
+<tr>
+<td><strong>仓位管理</strong></td>
+<td>单只股票不超过总仓位 20%</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="六系统架构">六、系统架构</h2>
+<h3 id="技术架构图">6.1 技术架构图</h3>
+<pre><code>┌─────────────────────────────────────────────────────┐
+│                    用户层                           │
+│  ┌──────────────┐  ┌──────────────┐               │
+│  │   Web 浏览器  │  │   手机/平板   │               │
+│  └──────┬───────┘  └──────┬───────┘               │
+└─────────┼────────────────┼─────────────────────────┘
+          │                │
+          ▼                ▼
+┌─────────────────────────────────────────────────────┐
+│                    接入层                           │
+│  ┌──────────────────────────────────────────┐      │
+│  │         ngrok 固定域名                    │      │
+│  │   chariest-nancy-nonincidentally.        │      │
+│  │           ngrok-free.dev                 │      │
+│  └──────────────────┬───────────────────────┘      │
+└─────────────────────┼───────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│                    服务层                           │
+│  ┌──────────────────────────────────────────┐      │
+│  │         Gunicorn (8 Workers)              │      │
+│  │  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐       │      │
+│  │  │ W1  │ │ W2  │ │ ... │ │ W8  │       │      │
+│  │  └─────┘ └─────┘ └─────┘ └─────┘       │      │
+│  └──────────────────┬───────────────────────┘      │
+└─────────────────────┼───────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│                    应用层                           │
+│  ┌──────────────────────────────────────────┐      │
+│  │      Flask + Python 筛选器              │      │
+│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐  │      │
+│  │  │ 杯柄筛选 │ │ 突破筛选 │ │ 回调筛选 │  │      │
+│  │  └─────────┘ └─────────┘ └─────────┘  │      │
+│  └──────────────────────────────────────────┘      │
+└─────────────────────┬───────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│                    数据层                           │
+│  ┌──────────────┐  ┌──────────────┐               │
+│  │  SQLite 数据库 │  │  Excel 输出   │               │
+│  │  (stock_data)  │  │  (选股结果)   │               │
+│  └──────────────┘  └──────────────┘               │
+└─────────────────────────────────────────────────────┘</code></pre>
+<h3 id="核心模块">6.2 核心模块</h3>
+<table>
+<thead>
+<tr>
+<th>模块</th>
+<th>功能</th>
+<th>文件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>筛选引擎</strong></td>
+<td>杯柄形态识别算法</td>
+<td><code>coffee_cup_screener.py</code></td>
+</tr>
+<tr>
+<td><strong>参数配置</strong></td>
+<td>欧奈尔标准参数</td>
+<td><code>OneilParams</code> 类</td>
+</tr>
+<tr>
+<td><strong>形态识别</strong></td>
+<td>U型验证、柄部识别</td>
+<td><code>find_cup_handle_oneil()</code></td>
+</tr>
+<tr>
+<td><strong>趋势分析</strong></td>
+<td>均线计算、RS分数</td>
+<td><code>check_ma_trend()</code></td>
+</tr>
+<tr>
+<td><strong>风控计算</strong></td>
+<td>止损位、目标位</td>
+<td>内置算法</td>
+</tr>
+<tr>
+<td><strong>Web界面</strong></td>
+<td>Dashboard展示</td>
+<td><code>app.py</code> + <code>index.html</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="七使用指南">七、使用指南</h2>
+<h3 id="日常使用流程">7.1 日常使用流程</h3>
+<p><strong>Step 1: 数据更新</strong></p>
+<div class="sourceCode" id="cb10"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 每天收盘后自动运行</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="ex">python3</span> scripts/daily_update_screener.py <span class="at">--loop</span></span></code></pre></div>
+<p><strong>Step 2: 运行筛选</strong> - 登录 Dashboard -
+找到「欧奈尔杯柄形态 (CANSLIM)」 - 点击「▶ 运行」选择日期 -
+查看筛选结果</p>
+<p><strong>Step 3: 单股检查</strong> - 点击筛选器「🔍 检查」按钮 -
+输入股票代码 - 查看是否符合标准</p>
+<h3 id="选股后操作">7.2 选股后操作</h3>
+<ol type="1">
+<li><strong>人工复核</strong>：必须人工查看K线图确认</li>
+<li><strong>板块检查</strong>：优先选择热点板块个股</li>
+<li><strong>设置预警</strong>：加入自选股，突破时提醒</li>
+<li><strong>执行风控</strong>：严格按系统计算的止损位操作</li>
+</ol>
+<hr />
+<h2 id="八常见问题">八、常见问题</h2>
+<h3 id="q1-为什么选出的股票这么少">Q1: 为什么选出的股票这么少？</h3>
+<p><strong>A:</strong>
+欧奈尔标准本身就很严格。震荡市参数下，每天通常只有 0-5
+只股票符合。这恰恰说明系统的有效性——只选最优质的形态。</p>
+<h3 id="q2-杯深超过-35-可以吗">Q2: 杯深超过 35% 可以吗？</h3>
+<p><strong>A:</strong> 不建议。杯深 &gt;35%
+说明抛压太重，即使突破也容易被套牢盘打压。欧奈尔研究发现 12%-35%
+是最理想的区间。</p>
+<h3 id="q3-为什么必须-ma200-向上">Q3: 为什么必须 MA200 向上？</h3>
+<p><strong>A:</strong> MA200 代表长期趋势。如果 MA200
+向下，说明大盘或个股处于长期熊市，此时突破成功率极低。</p>
+<h3 id="q4-rs-分数怎么计算">Q4: RS 分数怎么计算？</h3>
+<p><strong>A:</strong> 基于过去 12 个月涨幅相对于市场的排名。RS≥85
+表示该股票超越了 85% 的个股，属于强势股。</p>
+<hr />
+<h2 id="九版本信息">九、版本信息</h2>
+<table>
+<thead>
+<tr>
+<th>项目</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>系统名称</strong></td>
+<td>欧奈尔杯柄形态选股系统 (CANSLIM)</td>
+</tr>
+<tr>
+<td><strong>版本</strong></td>
+<td>v2.0 欧奈尔标准版</td>
+</tr>
+<tr>
+<td><strong>更新日期</strong></td>
+<td>2026-03-17</td>
+</tr>
+<tr>
+<td><strong>开发团队</strong></td>
+<td>Neo Trading System</td>
+</tr>
+<tr>
+<td><strong>核心算法</strong></td>
+<td>William J. O’Neil 杯柄形态理论</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="十免责声明">十、免责声明</h2>
+<ol type="1">
+<li>本系统仅供学习和研究使用，不构成投资建议</li>
+<li>股市有风险，投资需谨慎</li>
+<li>任何选股系统都无法保证 100% 胜率</li>
+<li>请结合自身风险承受能力做出投资决策</li>
+</ol>
+<hr />
+<p><strong>© 2026 Neo Trading System. All Rights Reserved.</strong></p>
+</body>
+</html>
