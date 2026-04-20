@@ -1,0 +1,233 @@
+import { useState, useEffect } from 'react'
+import { Select, DatePicker, Button, Spin, Card } from 'antd'
+import dayjs from 'dayjs'
+
+type DayjsType = dayjs.Dayjs
+
+/**
+ * Lao Ya Tou Five Flags Stock Pool Page
+ *
+ * Shows screening results from five flags screeners with time-axis K-line chart
+ */
+interface ScreenerResult {
+  stock_code: string
+  stock_name: string
+  screener_id: string
+  screener_name: string
+  screen_date: string
+  close_price: number
+  match_reason: string
+}
+
+interface Stock {
+  stock_code: string
+  stock_name: string
+}
+
+interface FilterState {
+  selectedStock: string
+  startDate: DayjsType | null
+  endDate: DayjsType | null
+  selectedScreeners: string[]
+}
+
+const LaoYaTouFiveFlags = () => {
+  // TEMPORARILY DISABLED - Five Flags feature
+  // const [stocks, setStocks] = useState<Stock[]>([]);
+  // const [results, setResults] = useState<ScreenerResult[]>([]);
+  // const [filters, setFilters] = useState<FilterState>({
+  //   selectedStock: '',
+  //   startDate: null,
+  //   endDate: null,
+  //   selectedScreeners: []
+  // });
+  // const [loading, setLoading] = useState(false);
+
+  // Fetch stocks on mount (TEMPORARILY DISABLED)
+  // useEffect(() => {
+  //   fetchStocks();
+  // }, []);
+
+  // Fetch results when filters change
+  useEffect(() => {
+    if (filters.selectedStock) {
+      fetchResults(filters);
+    }
+  }, [filters.selectedStock]);
+
+  // TEMPORARILY DISABLED
+  // async function fetchStocks() {
+  //   try {
+  //     const response = await fetch('/api/five-flags/stocks');
+  //     const data = await response.json();
+  //     setStocks(data.data || []);
+  //   } catch (error) {
+  //     console.error('Failed to fetch stocks:', error);
+  //   }
+  // }
+
+  async function fetchResults(currentFilters: FilterState) {
+    if (!currentFilters.selectedStock) return;
+
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (currentFilters.startDate) {
+        params.append('start_date', (currentFilters.startDate as dayjs.Dayjs).format('YYYY-MM-DD'));
+      }
+      if (currentFilters.endDate) {
+        params.append('end_date', (currentFilters.endDate as dayjs.Dayjs).format('YYYY-MM-DD'));
+      }
+      if (currentFilters.selectedScreeners.length > 0) {
+        params.append('screener_ids', currentFilters.selectedScreeners.join(','));
+      }
+
+      const response = await fetch(`/api/five-flags/results?${params.toString()}`);
+      const data = await response.json();
+      setResults(data.data || []);
+    } catch (error) {
+      console.error('Failed to fetch results:', error);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleStockChange(value: string) {
+    setFilters(prev => ({
+      ...prev,
+      selectedStock: value
+    }));
+  }
+
+  function handleDateRangeChange(dates: null | [DayjsType | null, DayjsType | null]) {
+    setFilters(prev => ({
+      ...prev,
+      startDate: dates?.[0] || null,
+      endDate: dates?.[1] || null
+    }));
+  }
+
+  function handleScreenerChange(values: string[]) {
+    setFilters(prev => ({
+      ...prev,
+      selectedScreeners: values
+    }));
+  }
+
+  function exportCSV() {
+    const params = new URLSearchParams();
+    if (filters.startDate) {
+      params.append('start_date', (filters.startDate as dayjs.Dayjs).format('YYYY-MM-DD'));
+    }
+    if (filters.endDate) {
+      params.append('end_date', (filters.endDate as dayjs.Dayjs).format('YYYY-MM-DD'));
+    }
+    if (filters.selectedStock) {
+      params.append('stock_code', filters.selectedStock);
+    }
+    window.open(`/api/five-flags/export?${params.toString()}`, '_blank');
+  }
+
+  return (
+    <div style={{ padding: '20px' }}>
+      <h1 style={{ textAlign: 'center', marginBottom: '20px' }}>
+        老鸭头五图选股池
+      </h1>
+
+      <Spin spinning={loading}>
+        <div style={{ display: 'flex', gap: '20px' }}>
+          {/* Stock List Panel */}
+          <Card title="股票列表" style={{ width: '250px' }}>
+            <Select
+              placeholder="选择股票"
+              style={{ width: '100%' }}
+              value={filters.selectedStock}
+              onChange={handleStockChange}
+              options={stocks.map((stock: Stock) => ({
+                label: `${stock.stock_code} - ${stock.stock_name}`,
+                value: stock.stock_code
+              }))}
+            />
+            <div style={{ marginTop: '10px' }}>
+              <small style={{ color: '#888' }}>
+                已找到 {stocks.length} 只股票
+              </small>
+            </div>
+          </Card>
+
+          {/* Filters Panel */}
+          <Card title="筛选条件" style={{ flex: 1, minWidth: '300px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+              <span style={{ fontWeight: 'bold' }}>日期范围：</span>
+              <DatePicker.RangePicker
+                style={{ width: '100%' }}
+                value={[filters.startDate, filters.endDate]}
+                onChange={handleDateRangeChange}
+              />
+              <span style={{ fontWeight: 'bold' }}>筛选器：</span>
+              <Select
+                mode="multiple"
+                placeholder="选择筛选器"
+                style={{ width: '100%' }}
+                value={filters.selectedScreeners}
+                onChange={handleScreenerChange}
+                options={[
+                  { label: '银凤凰', value: 'yin_feng_huang' },
+                  { label: '金凤凰', value: 'jin_feng_huang' },
+                  { label: '试盘线', value: 'shi_pan_xian' },
+                  { label: '二板回调', value: 'er_ban_hui_tiao' },
+                  { label: '涨停倍量阴', value: 'zhang_ting_bei_liang_yin' }
+                ]}
+              />
+            </div>
+          </Card>
+
+          {/* Results Panel */}
+          <Card title="筛选结果" style={{ flex: 2, minWidth: '500px' }}>
+            <Button
+              type="primary"
+              onClick={exportCSV}
+              style={{ marginBottom: '15px' }}
+            >
+              导出 CSV
+            </Button>
+            <div style={{ maxHeight: '500px', overflowY: 'auto' }}>
+              {results.length === 0 ? (
+                <div style={{ textAlign: 'center', color: '#888', padding: '50px 0' }}>
+                  暂无结果
+                </div>
+              ) : (
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr>
+                      <th>股票代码</th>
+                      <th>股票名称</th>
+                      <th>筛选器</th>
+                      <th>筛选日期</th>
+                      <th>收盘价</th>
+                      <th>匹配原因</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {results.map((result: ScreenerResult, index: number) => (
+                      <tr key={index}>
+                        <td>{result.stock_code}</td>
+                        <td>{result.stock_name}</td>
+                        <td>{result.screener_name}</td>
+                        <td>{result.screen_date}</td>
+                        <td>{result.close_price}</td>
+                        <td>{result.match_reason}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </Card>
+        </div>
+      </Spin>
+    </div>
+  );
+};
+
+export default LaoYaTouFiveFlags;

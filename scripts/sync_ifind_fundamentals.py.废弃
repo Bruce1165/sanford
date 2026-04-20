@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""
+从 iFind 同步股票基本面数据到数据库
+包括：总市值、流通市值、上市日期、ROE、负债率等
+"""
+import sys
+import sqlite3
+from pathlib import Path
+from datetime import datetime
+
+# Add dashboard to path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'dashboard'))
+
+from ifind_client import IfindClient
+
+DB_PATH = Path(__file__).parent.parent / "data" / "stock_data.db"
+
+def get_all_stock_codes():
+    """获取所有股票代码"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT code FROM stocks WHERE asset_type = 'stock' AND is_delisted = 0")
+    codes = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return codes
+
+def fetch_fundamental_data(codes, client):
+    """从 iFind 获取基本面数据"""
+    # iFind 指标
+    indicators = (
+        "ths_market_cap_stock,"           # 总市值
+        "ths_cir_market_cap_stock,"       # 流通市值
+        "ths_listing_date_stock,"         # 上市日期
+        "ths_roe_stock,"                  # ROE
+        "ths_debt_ratio_stock"            # 资产负债率
+    )
+    
+    all_data = {}
+    batch_size = 100
+    
+    for i in range(0, len(codes), batch_size):
+        batch = codes[i:i + batch_size]
+        # Format codes with exchange suffix
+        formatted_codes = []
+        for code in batch:
+            if code.startswith('6'):
+                formatted_codes.append(f"{code}.SH")
+            elif code.startswith('0') or code.startswith('3'):
+                formatted_codes.append(f"{code}.SZ")
+            elif code.startswith('8') or code.startswith('4'):
+                formatted_codes.append(f"{code}.BJ")
+        
+        codes_str = ",".join(formatted_codes)
+        
+        try:
+            params = {
+                'codes': codes_str,
+                'indicators': indicators
+            }
+            
+            result = client.post('ths_stock_basic', params)
+            
+            if result.get('data') and result['data'].get('tables'):
+                tables = result['data']['tables']
+                for table in tables:
+                    code = table.get('thscode', '').split('.')[0]
+                    if code:
+                        all_data[code] = {
+                            'market_cap': table.get('ths_market_cap_stock'),
+                            'circulating_cap': table.get('ths_cir_market_cap_stock'),
+                            'list_date': table.get('ths_listing_date_stock'),
+                            'roe': table.get('ths_roe_stock'),
+                            'debt_ratio': table.get('ths_debt_ratio_stock')
+                        }
+            
+            print(f"✅ 已处理 {min(i+batch_size, len(codes))}/{len(codes)} 只股票")
+            
+        except Exception as e:
+            print(f"❌ 批次错误: {e}")
+    
+    return all_data
+
+def update_stocks_fundamentals(data):
+    """更新 stocks 表"""
+    if not data:
+        print("没有数据需要更新")
+        return
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    updated = 0
+    for code, values in data.items():
+        try:
+            # Parse market cap (convert to yuan if in other unit)
+            market_cap = values.get('market_cap')
+            if market_cap and market_cap != 'NA':
+                market_cap = float(market_cap) * 10000  # Convert to yuan
+            else:
+                market_cap = None
+            
+            circulating_cap = values.get('circulating_cap')
+            if circulating_cap and circulating_cap != 'NA':
+                circulating_cap = float(circulating_cap) * 10000
+            else:
+                circulating_cap = None
+            
+            # Parse list date
+            list_date = values.get('list_date')
+            if list_date and list_date != 'NA':
+                try:
+                    list_date = datetime.strptime(str(list_date), '%Y-%m-%d').date()
+                except:
+                    list_date = None
+            else:
+                list_date = None
+            
+            # Parse ROE
+            roe = values.get('roe')
+            if roe and roe != 'NA':
+                roe = float(roe)
+            else:
+                roe = None
+            
+            # Parse debt ratio
+            debt_ratio = values.get('debt_ratio')
+            if debt_ratio and debt_ratio != 'NA':
+                debt_ratio = float(debt_ratio)
+            else:
+                debt_ratio = None
+            
+            cursor.execute("""
+                UPDATE stocks SET
+                    total_market_cap = COALESCE(?, total_market_cap),
+                    circulating_market_cap = COALESCE(?, circulating_market_cap),
+                    list_date = COALESCE(?, list_date),
+                    roe = COALESCE(?, roe),
+                    debt_ratio = COALESCE(?, debt_ratio),
+                    ifind_updated_at = ?
+                WHERE code = ?
+            """, (market_cap, circulating_cap, list_date, roe, debt_ratio, datetime.now(), code))
+            
+            if cursor.rowcount > 0:
+                updated += 1
+                
+        except Exception as e:
+            print(f"⚠️ 更新 {code} 失败: {e}")
+    
+    conn.commit()
+    conn.close()
+    print(f"✅ 成功更新 {updated} 只股票")
+
+def verify_update():
+    """验证更新结果"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT 
+            COUNT(*) as total,
+            COUNT(CASE WHEN total_market_cap IS NOT NULL THEN 1 END) as has_market_cap,
+            COUNT(CASE WHEN circulating_market_cap IS NOT NULL THEN 1 END) as has_circulating_cap,
+            COUNT(CASE WHEN list_date IS NOT NULL THEN 1 END) as has_list_date,
+            COUNT(CASE WHEN roe IS NOT NULL THEN 1 END) as has_roe,
+            COUNT(CASE WHEN debt_ratio IS NOT NULL THEN 1 END) as has_debt_ratio
+        FROM stocks
+    """)
+    
+    row = cursor.fetchone()
+    conn.close()
+    
+    print("\n=== 更新后统计 ===")
+    print(f"总股票数: {row[0]}")
+    print(f"总市值: {row[1]} ({row[1]/row[0]*100:.1f}%)")
+    print(f"流通市值: {row[2]} ({row[2]/row[0]*100:.1f}%)")
+    print(f"上市日期: {row[3]} ({row[3]/row[0]*100:.1f}%)")
+    print(f"ROE: {row[4]} ({row[4]/row[0]*100:.1f}%)")
+    print(f"负债率: {row[5]} ({row[5]/row[0]*100:.1f}%)")
+
+def main():
+    print("=== 从 iFind 同步股票基本面数据 ===\n")
+    
+    # Get stock codes
+    codes = get_all_stock_codes()
+    print(f"总股票数: {len(codes)}\n")
+    
+    # Initialize client
+    print("🔌 连接 iFind...")
+    client = IfindClient()
+    print("✅ 已连接\n")
+    
+    # Fetch data
+    print("⬇️ 获取基本面数据...")
+    data = fetch_fundamental_data(codes, client)
+    print(f"✅ 获取了 {len(data)} 只股票数据\n")
+    
+    # Update database
+    print("💾 更新数据库...")
+    update_stocks_fundamentals(data)
+    
+    # Verify
+    verify_update()
+
+if __name__ == '__main__':
+    main()

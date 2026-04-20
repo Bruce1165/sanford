@@ -1,0 +1,645 @@
+#!/usr/bin/env python3
+"""
+Screener Registry and Execution - Dynamic Discovery Version
+"""
+import os
+import sys
+import json
+import subprocess
+import re
+from pathlib import Path
+from datetime import datetime
+import sqlite3
+import pandas as pd
+import inspect
+
+# Add workspace to path
+WORKSPACE_ROOT = Path(os.environ.get('WORKSPACE_ROOT', str(Path(__file__).parent.parent)))
+sys.path.insert(0, str(WORKSPACE_ROOT))
+sys.path.insert(0, str(WORKSPACE_ROOT / "scripts"))
+
+try:
+    from models import (
+        register_screener, get_all_screeners, create_run, complete_run,
+        save_result, get_run, get_results, delete_screener
+    )
+except ImportError:
+    from dashboard.models import (
+        register_screener, get_all_screeners, create_run, complete_run,
+        save_result, get_run, get_results, delete_screener
+    )
+
+DB_PATH = WORKSPACE_ROOT / "data" / "stock_data.db"
+
+
+def is_valid_screener_file(filepath):
+    """Check if a Python file is a valid screener"""
+    if not filepath.is_file():
+        return False
+    
+    if not filepath.suffix == '.py':
+        return False
+    
+    # Must contain 'screener' in filename (case insensitive)
+    if 'screener' not in filepath.name.lower():
+        return False
+    
+    # Exclude base classes and test files
+    exclude_patterns = ['base_', 'test_', '_test', '_base']
+    filename_lower = filepath.name.lower()
+    for pattern in exclude_patterns:
+        if pattern in filename_lower:
+            return False
+    
+    # Must contain a Screener class
+    try:
+        content = filepath.read_text(encoding='utf-8')
+        # Look for class definition ending with 'Screener' (with or without parenthesis)
+        if not re.search(r'class\s+\w+Screener\s*[\(:]', content):
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def extract_screener_info(filepath):
+    """Extract screener info from Python file"""
+    name = filepath.stem  # filename without extension
+    display_name = name.replace('_', ' ').title()
+    description = ""
+    
+    try:
+        content = filepath.read_text(encoding='utf-8')
+        
+        # Extract docstring
+        match = re.search(r'"""(.*?)"""', content, re.DOTALL)
+        if match:
+            docstring = match.group(1).strip()
+            lines = [l.strip() for l in docstring.split('\n') if l.strip()]
+            if lines:
+                # First line is display name (remove ' - Screener' suffix if present)
+                display_name = lines[0].split(' - ')[0].strip()
+                if len(lines) > 1:
+                    description = '\n'.join(lines[1:])
+        
+        # Extract class name
+        class_match = re.search(r'class\s+(\w+Screener)\s*[\(:]', content)
+        class_name = class_match.group(1) if class_match else name.title().replace('_', '')
+        
+    except Exception as e:
+        print(f"Error parsing {filepath}: {e}")
+        class_name = name.title().replace('_', '')
+    
+    return {
+        'name': name,
+        'display_name': display_name,
+        'description': description,
+        'file_path': str(filepath),
+        'class_name': class_name
+    }
+
+
+def discover_screeners():
+    """Auto-discover all screeners from workspace root and scripts directory"""
+    screeners = []
+    
+    # Scan both workspace root and scripts directory
+    search_paths = [WORKSPACE_ROOT, WORKSPACE_ROOT / "scripts", WORKSPACE_ROOT / "screeners"]
+    
+    for search_path in search_paths:
+        if not search_path.exists():
+            continue
+        for filepath in search_path.iterdir():
+            if is_valid_screener_file(filepath):
+                screener_info = extract_screener_info(filepath)
+                # 避免重复添加
+                if not any(s['name'] == screener_info['name'] for s in screeners):
+                    screeners.append(screener_info)
+                    print(f"Discovered screener: {screener_info['name']} -> {screener_info['class_name']}")
+    
+    return screeners
+
+
+def sync_screeners_with_db():
+    """Sync discovered screeners with database (add new, remove deleted)"""
+    discovered = discover_screeners()
+    registered = get_all_screeners()
+    registered_names = {s['name'] for s in registered}
+    discovered_names = {s['name'] for s in discovered}
+    
+    # Add new screeners
+    for s in discovered:
+        if s['name'] not in registered_names:
+            register_screener(
+                name=s['name'],
+                display_name=s['display_name'],
+                description=s['description'],
+                file_path=s['file_path']
+            )
+            print(f"Registered new screener: {s['name']}")
+    
+    # Remove deleted screeners
+    for name in registered_names - discovered_names:
+        delete_screener(name)
+        print(f"Removed deleted screener: {name}")
+    
+    return discovered
+
+
+def get_screener_class_name(screener_name):
+    """Get class name from screener file dynamically"""
+    # 先在根目录查找，再在 scripts 目录查找
+    filepath = WORKSPACE_ROOT / f"{screener_name}.py"
+    if not filepath.exists():
+        filepath = WORKSPACE_ROOT / "scripts" / f"{screener_name}.py"
+        if not filepath.exists():
+            filepath = WORKSPACE_ROOT / "screeners" / f"{screener_name}.py"
+    
+    if not filepath.exists():
+        raise FileNotFoundError(f"Screener file not found: {screener_name}.py")
+    
+    try:
+        content = filepath.read_text(encoding='utf-8')
+        # Look for class definition ending with 'Screener' (with or without parenthesis)
+        match = re.search(r'class\s+(\w+Screener)\s*[\(:]', content)
+        if match:
+            return match.group(1)
+    except Exception as e:
+        print(f"Error reading {filepath}: {e}")
+    
+    # Fallback: convert filename to class name
+    return screener_name.title().replace('_', '')
+
+
+def run_screener_subprocess(screener_name, run_date):
+    """Run screener in subprocess and capture results"""
+    
+    # Create run record
+    run_id = create_run(screener_name, run_date)
+    
+    # Change to workspace root for correct DB path resolution
+    original_cwd = os.getcwd()
+    
+    try:
+        os.chdir(WORKSPACE_ROOT)
+        
+        # Import and run the screener directly
+        # 先在根目录查找，再在 scripts 目录查找
+        screener_file = WORKSPACE_ROOT / f"{screener_name}.py"
+        if not screener_file.exists():
+            screener_file = WORKSPACE_ROOT / "scripts" / f"{screener_name}.py"
+        
+        if not screener_file.exists():
+            raise FileNotFoundError(f"Screener file not found: {screener_file}")
+        
+        # Add workspace to path for imports
+        if str(WORKSPACE_ROOT) not in sys.path:
+            sys.path.insert(0, str(WORKSPACE_ROOT))
+        if str(WORKSPACE_ROOT / "scripts") not in sys.path:
+            sys.path.insert(0, str(WORKSPACE_ROOT / "scripts"))
+        
+        # Import the module — reload if already in sys.modules to pick up file changes
+        import importlib.util as _ilu
+        # If base_screener is stale (wrong __init__ signature), evict it so the
+        # correct version from scripts/ is freshly imported.
+        _bs = sys.modules.get('base_screener')
+        if _bs is not None:
+            try:
+                import inspect as _insp
+                sig = str(_insp.signature(_bs.BaseScreener.__init__))
+                # Old signature has neither screener_name nor **kwargs
+                if 'screener_name' not in sig and '**kwargs' not in sig:
+                    del sys.modules['base_screener']
+            except Exception:
+                pass
+        # (Re-)load the screener module fresh from its file path
+        if screener_name in sys.modules:
+            del sys.modules[screener_name]
+        spec = _ilu.spec_from_file_location(screener_name, screener_file)
+        module = _ilu.module_from_spec(spec)
+        sys.modules[screener_name] = module   # register before exec to handle circular imports
+        spec.loader.exec_module(module)
+        
+        # Get the screener class dynamically
+        class_name = get_screener_class_name(screener_name)
+        screener_class = getattr(module, class_name)
+        
+        # Instantiate and run — pass db_path if the class accepts it
+        import inspect as _inspect
+        _init_params = set(_inspect.signature(screener_class.__init__).parameters)
+        _init_kwargs = {}
+        if 'db_path' in _init_params:
+            _init_kwargs['db_path'] = str(DB_PATH)
+        screener = screener_class(**_init_kwargs)
+        results = screener.run_screening(run_date)
+        
+
+        if isinstance(results, tuple):
+            # Extract results from tuple (results, analysis_data)
+            results = results[0] if len(results) > 0 else []
+        
+        if isinstance(results, dict):
+            # Flatten dict results (e.g., daily_hot_cold_screener)
+            flat_results = []
+            for key, items in results.items():
+                if isinstance(items, list):
+                    for item in items:
+                        item['_category'] = key  # Mark category
+                        flat_results.append(item)
+            results = flat_results
+        
+        # Save results to database
+        for r in results:
+            # 支持多种价格字段名
+            close_price = r.get('close', r.get('current_price', r.get('price', 0)))
+            extra_data = {k: v for k, v in r.items() 
+                         if k not in ['code', 'name', 'close', 'current_price', 'price', 'turnover', 'pct_change']}
+            
+            save_result(
+                run_id=run_id,
+                stock_code=r.get('code', ''),
+                stock_name=r.get('name', ''),
+                close_price=close_price,
+                turnover=r.get('turnover', 0),
+                pct_change=r.get('pct_change', 0),
+                extra_data=extra_data
+            )
+        
+        # Mark as completed
+        complete_run(run_id, stocks_found=len(results))
+        
+        return {
+            'success': True,
+            'run_id': run_id,
+            'stocks_found': len(results),
+            'results': results
+        }
+        
+    except Exception as e:
+        import traceback
+        error_msg = f"{str(e)}\n{traceback.format_exc()}"
+        complete_run(run_id, error_message=error_msg)
+        
+        return {
+            'success': False,
+            'run_id': run_id,
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }
+    finally:
+        os.chdir(original_cwd)
+
+
+def get_stock_data_for_chart(stock_code, days=60):
+    """Get stock price data for K-line chart"""
+    try:
+        query = """
+            SELECT trade_date, open, high, low, close, volume, amount
+            FROM daily_prices
+            WHERE code = ?
+            ORDER BY trade_date DESC
+            LIMIT ?
+        """
+        conn = sqlite3.connect(WORKSPACE_ROOT / "data" / "stock_data.db")
+        df = pd.read_sql_query(query, conn, params=(stock_code, days))
+        conn.close()
+        
+        if df.empty:
+            return None
+        
+        df['trade_date'] = pd.to_datetime(df['trade_date'])
+        df = df.sort_values('trade_date').reset_index(drop=True)
+        
+        # Convert to list of dicts for JSON serialization
+        records = []
+        for _, row in df.iterrows():
+            records.append({
+                'date': row['trade_date'].strftime('%Y-%m-%d'),
+                'open': round(row['open'], 2),
+                'high': round(row['high'], 2),
+                'low': round(row['low'], 2),
+                'close': round(row['close'], 2),
+                'volume': int(row['volume']),
+                'amount': round(row['amount'], 2) if pd.notna(row['amount']) else 0
+            })
+        
+        return records
+        
+    except Exception as e:
+        print(f"Error getting stock data for {stock_code}: {e}")
+        return None
+
+
+# CRUD Operations for Screeners/Cron Tasks/Manual Jobs
+
+def create_screener_file(name, display_name, description, category, code_content=None):
+    """Create a new screener/task file"""
+    
+    # Determine file location based on category
+    if category == 'screener':
+        filepath = WORKSPACE_ROOT / f"{name}.py"
+    else:
+        filepath = WORKSPACE_ROOT / "scripts" / f"{name}.py"
+    
+    if filepath.exists():
+        raise FileExistsError(f"File already exists: {filepath}")
+    
+    # Generate default code if not provided
+    if code_content is None:
+        code_content = generate_default_screener_code(name, display_name, description, category)
+    
+    # Write file
+    filepath.write_text(code_content, encoding='utf-8')
+    
+    # Register in database
+    class_name = name.title().replace('_', '') + 'Screener'
+    register_screener(
+        name=name,
+        display_name=display_name,
+        description=description,
+        file_path=str(filepath)
+    )
+    
+    return {
+        'name': name,
+        'display_name': display_name,
+        'description': description,
+        'file_path': str(filepath),
+        'class_name': class_name
+    }
+
+def update_screener_file(name, code_content, display_name=None, description=None):
+    """Update an existing screener/task file"""
+    
+    # Find the file
+    filepath = WORKSPACE_ROOT / f"{name}.py"
+    if not filepath.exists():
+        filepath = WORKSPACE_ROOT / "scripts" / f"{name}.py"
+    
+    if not filepath.exists():
+        raise FileNotFoundError(f"Screener file not found: {name}")
+    
+    # Update code
+    filepath.write_text(code_content, encoding='utf-8')
+    
+    # Update database if display_name or description provided
+    if display_name or description:
+        from models import update_screener
+        update_screener(name, display_name=display_name, description=description)
+    
+    return {'success': True, 'name': name}
+
+def delete_screener_file(name):
+    """Delete a screener/task file"""
+    
+    # Find the file
+    filepath = WORKSPACE_ROOT / f"{name}.py"
+    if not filepath.exists():
+        filepath = WORKSPACE_ROOT / "scripts" / f"{name}.py"
+    
+    # Delete file if exists
+    if filepath.exists():
+        filepath.unlink()
+    
+    # Remove from database
+    delete_screener(name)
+    
+    return {'success': True, 'name': name}
+
+def generate_default_screener_code(name, display_name, description, category):
+    """Generate default screener code template"""
+    
+    class_name = name.title().replace('_', '') + 'Screener'
+    
+    if category == 'screener':
+        template = f'''#!/usr/bin/env python3
+"""
+{display_name} - {description}
+"""
+
+import os
+import sys
+import logging
+from datetime import datetime
+from pathlib import Path
+
+# Add workspace to path
+WORKSPACE_ROOT = Path(__file__).parent
+sys.path.insert(0, str(WORKSPACE_ROOT))
+sys.path.insert(0, str(WORKSPACE_ROOT / "scripts"))
+
+import pandas as pd
+
+
+class {class_name}:
+    """
+    {display_name} - {description}
+    """
+    
+    def __init__(self):
+        self.logger = self._setup_logging()
+    
+    def _setup_logging(self):
+        """设置日志"""
+        logger = logging.getLogger('{name}')
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+        return logger
+    
+    def run_screening(self, trade_date: str = None):
+        """
+        运行筛选
+        
+        Returns:
+            list: 筛选结果列表
+        """
+        if trade_date is None:
+            trade_date = datetime.now().strftime('%Y%m%d')
+        
+        self.logger.info(f"开始运行 {display_name}: {{trade_date}}")
+        
+        # TODO: 实现筛选逻辑
+        results = []
+        
+        self.logger.info(f"筛选完成: 找到 {{len(results)}} 只股票")
+        return results
+
+
+def main():
+    """主函数"""
+    screener = {class_name}()
+    results = screener.run_screening()
+    
+    if results:
+        print(f"\\n找到 {{len(results)}} 只股票:")
+        for r in results[:5]:
+            print(f"  {{r['code']}} {{r['name']}}")
+
+
+if __name__ == '__main__':
+    main()
+'''
+    elif category == 'cron':
+        template = f'''#!/usr/bin/env python3
+"""
+{display_name} - {description}
+Cron Task - 定时任务
+"""
+
+import os
+import sys
+import logging
+from datetime import datetime
+from pathlib import Path
+
+# Add workspace to path
+WORKSPACE_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(WORKSPACE_ROOT))
+sys.path.insert(0, str(WORKSPACE_ROOT / "scripts"))
+
+import pandas as pd
+
+
+class {class_name}:
+    """
+    {display_name} - Cron Task
+    
+    这是一个定时任务，在指定时间自动运行
+    """
+    
+    def __init__(self):
+        self.logger = self._setup_logging()
+    
+    def _setup_logging(self):
+        """设置日志"""
+        logger = logging.getLogger('{name}')
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+        return logger
+    
+    def run_screening(self, trade_date: str = None):
+        """
+        运行定时任务
+        
+        Returns:
+            list: 任务结果列表
+        """
+        if trade_date is None:
+            trade_date = datetime.now().strftime('%Y%m%d')
+        
+        self.logger.info(f"开始运行定时任务 {display_name}: {{trade_date}}")
+        
+        # TODO: 实现任务逻辑
+        results = []
+        
+        self.logger.info(f"任务完成: 找到 {{len(results)}} 只股票")
+        return results
+
+
+def main():
+    """主函数"""
+    task = {class_name}()
+    results = task.run_screening()
+    
+    if results:
+        print(f"\\n找到 {{len(results)}} 只股票:")
+        for r in results[:5]:
+            print(f"  {{r['code']}} {{r['name']}}")
+
+
+if __name__ == '__main__':
+    main()
+'''
+    else:  # job
+        template = f'''#!/usr/bin/env python3
+"""
+{display_name} - {description}
+Manual Job - 手动任务
+"""
+
+import os
+import sys
+import logging
+from datetime import datetime
+from pathlib import Path
+
+# Add workspace to path
+WORKSPACE_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(WORKSPACE_ROOT))
+sys.path.insert(0, str(WORKSPACE_ROOT / "scripts"))
+
+import pandas as pd
+
+
+class {class_name}:
+    """
+    {display_name} - Manual Job
+    
+    这是一个手动触发的任务
+    """
+    
+    def __init__(self):
+        self.logger = self._setup_logging()
+    
+    def _setup_logging(self):
+        """设置日志"""
+        logger = logging.getLogger('{name}')
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+        return logger
+    
+    def run_screening(self, trade_date: str = None):
+        """
+        运行手动任务
+        
+        Returns:
+            list: 任务结果列表
+        """
+        if trade_date is None:
+            trade_date = datetime.now().strftime('%Y%m%d')
+        
+        self.logger.info(f"开始运行手动任务 {display_name}: {{trade_date}}")
+        
+        # TODO: 实现任务逻辑
+        results = []
+        
+        self.logger.info(f"任务完成: 找到 {{len(results)}} 只股票")
+        return results
+
+
+def main():
+    """主函数"""
+    job = {class_name}()
+    results = job.run_screening()
+    
+    if results:
+        print(f"\\n找到 {{len(results)}} 只股票:")
+        for r in results[:5]:
+            print(f"  {{r['code']}} {{r['name']}}")
+
+
+if __name__ == '__main__':
+    main()
+'''
+    
+    return template
+
+
+# Backward compatibility
+register_discovered_screeners = sync_screeners_with_db
+
+if __name__ == '__main__':
+    # Test
+    screeners = sync_screeners_with_db()
+    print(f"\nTotal screeners: {len(screeners)}")
+    for s in screeners:
+        print(f"  - {s['name']}: {s['display_name']} ({s['class_name']})")

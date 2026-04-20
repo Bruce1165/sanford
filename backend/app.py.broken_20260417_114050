@@ -1,0 +1,299 @@
+#!/usr/bin/env python3
+"""
+Flask Backend API for Trading Screener Dashboard
+"""
+import os
+import sys
+import sqlite3
+import traceback
+from pathlib import Path
+from dotenv import load_dotenv
+from datetime import datetime, date
+from flask import Flask, jsonify, request, send_from_directory, Response
+from flask_cors import CORS
+from functools import wraps
+import json
+import math
+
+class SafeJSONEncoder(json.JSONEncoder):
+    """JSON encoder that handles NaN, Infinity, -Infinity by converting to null"""
+    def encode(self, obj):
+        # Recursively walk through and replace NaN/Infinity
+        obj = self._sanitize(obj)
+        return super().encode(obj)
+
+    def _sanitize(self, obj):
+        if isinstance(obj, float):
+            if math.isnan(obj) or math.isinf(obj):
+                return None
+            return obj
+        elif isinstance(obj, dict):
+            return {k: self._sanitize(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._sanitize(item) for item in obj]
+        return obj
+
+def safe_jsonify(data):
+    """Return JSON response with NaN/Infinity handling"""
+    return Response(
+        json.dumps(data, cls=SafeJSONEncoder, ensure_ascii=False),
+        mimetype='application/json'
+    )
+
+# Load environment variables from config/.env
+# __file__ is backend/app.py, so parent is backend, parent.parent is NeoTrade2
+env_file = Path('/Users/mac/NeoTrade2/config/.env')
+if env_file.exists():
+    load_dotenv(env_file, override=True)  # Use override=True to force override existing env vars
+    print(f"[DEBUG] Loading .env from: {env_file}")
+else:
+    print(f"[WARNING] .env file not found at: {env_file}")
+
+# Add dashboard to path
+DASHBOARD_DIR = Path(__file__).parent
+# Ensure backend is in path
+sys.path.insert(0, str(DASHBOARD_DIR))
+sys.path.insert(0, str(DASHBOARD_DIR.parent))
+
+from models import (
+    init_db, get_db_connection, get_all_screeners, get_screener, get_runs, get_run,
+    get_results, get_results_by_date, log_access, get_access_stats
+)
+# screeners模块是backend目录的screeners.py
+import importlib.util
+spec = importlib.util.spec_from_file_location("screeners_module", DASHBOARD_DIR / "screeners.py")
+screeners_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(screeners_module)
+
+register_discovered_screeners = screeners_module.register_discovered_screeners
+
+# 简单密码配置 - 从环境变量读取，无默认值
+DASHBOARD_PASSWORD = os.environ.get('DASHBOARD_PASSWORD')
+print(f"[DEBUG] DASHBOARD_PASSWORD loaded: {DASHBOARD_PASSWORD[:10]}..." if DASHBOARD_PASSWORD else "[DEBUG] DASHBOARD_PASSWORD is None")
+if not DASHBOARD_PASSWORD:
+    raise ValueError("DASHBOARD_PASSWORD environment variable is required")
+
+def check_auth(username, password):
+    """验证密码（只验证密码）"""
+    return password == DASHBOARD_PASSWORD
+
+def authenticate():
+    """返回 401 响应要求认证"""
+    resp = Response(
+        'Please enter password to access Dashboard',
+        401,
+        {'WWW-Authenticate': 'Basic realm="NeoTrade Dashboard"'}
+    )
+    return resp
+
+def require_auth(f):
+    """装饰器：要求认证"""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+        return f(*args, **kwargs)
+    return decorated
+
+# Initialize Flask app
+app = Flask(__name__, static_folder=None)
+
+# Enable CORS with restricted origins for security
+# Only HTTPS for external domains to prevent mixed content issues
+CORS_ORIGINS = [
+    'http://localhost:5173',    # Vite dev server default
+    'http://localhost:3000',    # Alternative dev server
+    'http://127.0.0.1:5173',
+    'http://127.0.0.1:3000',
+    'https://neotrade.vip.cpolar.cn',  # Cpolar subdomain tunnel (correct domain)
+    'https://neotrade.cpolar.cn',  # Cpolar subdomain tunnel (legacy)
+    'https://neiltrade.cloud',      # Cpolar custom domain
+]
+CORS(app, origins=CORS_ORIGINS, supports_credentials=True, allow_headers=['Content-Type', 'Authorization'])
+
+# DEBUG: Log CORS origins to verify configuration
+print(f"[DEBUG] CORS Origins (NO HTTP CPOLAR): {CORS_ORIGINS}")
+
+# 为所有路由添加认证（除了健康检查）
+@app.before_request
+def before_request():
+    # 健康检查端点不需要认证
+    if request.path == '/api/health':
+        return None
+
+    # 临时调试端点不需要认证
+    if request.path == '/api/debug-auth':
+        return None
+
+    # 监控端点不需要认证
+    if request.path.startswith('/api/monitor'):
+        return None
+
+    # 检查是否为本地请求（跳过认证）
+    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    local_ips = ['127.0.0.1', '::1', 'localhost']
+    is_local = (ip in local_ips or
+                ip.startswith('192.168.') or
+                ip.startswith('10.') or
+                any(ip.startswith(f'172.{x}.') for x in range(16, 32)))
+
+    # 调试输出
+    print(f"[AUTH] Request: {request.path}, IP: {ip}, is_local: {is_local}")
+
+    # 记录访问（只记录主页面路由，排除 API、静态资源和健康检查）
+    if request.path == '/' or (not request.path.startswith('/api/') and
+                               not request.path.startswith('/assets/') and
+                               not request.path.startswith('/favicon') and
+                               not request.path.endswith('.svg') and
+                               not request.path.endswith('.ico')):
+        try:
+            log_access(ip, request.user_agent.string, request.path)
+        except:
+            pass  # Don't block request if logging fails
+
+    # 非本地请求需要认证
+    # 注意：本地请求不再跳过认证，确保 Basic Auth 在所有环境下都工作
+    if not is_local:
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+
+
+@app.route('/')
+def index():
+    response = send_from_directory(DASHBOARD_DIR.parent / 'frontend/dist', 'index.html')
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
+
+# Serve assets - with cache busting
+@app.route('/assets/<path:filename>')
+def serve_assets(filename):
+    response = send_from_directory(DASHBOARD_DIR.parent / 'frontend/dist/assets', filename)
+    # Assets have hash in filename, so we can cache them long-term
+    if '.' in filename and filename.split('.')[-2] and len(filename.split('.')[-2]) > 8:
+        # Hashed assets - cache for 1 year
+        response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+        return response
+    else:
+        # Non-hashed assets - no cache
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        return response
+
+# Serve favicon and other root files
+@app.route('/favicon.svg')
+def serve_favicon():
+    return send_from_directory(DASHBOARD_DIR.parent / 'frontend/dist', 'favicon.svg')
+
+@app.route('/icons.svg')
+def serve_icons():
+    return send_from_directory(DASHBOARD_DIR.parent / 'frontend/dist', 'icons.svg')
+
+# Catch-all route for React Router - must be last
+@app.route('/<path:path>')
+def catch_all(path):
+    # DEBUG: Log all non-API requests to diagnose 404s
+    print(f"[DEBUG] catch_all path: {path}, startswith api/: {path.startswith('api/')}")
+
+    # Don't catch API routes
+    if path.startswith('api/'):
+        print(f"[DEBUG] Returning 404 for API path: {path}")
+        return jsonify({'error': 'Not found'}), 404
+
+    # For all other routes, serve index.html (React Router handles client-side routing)
+    print(f"[DEBUG] Serving index.html for path: {path}")
+    return send_from_directory(DASHBOARD_DIR.parent / 'frontend/dist', 'index.html')
+
+# Initialize database on startup
+init_db()
+register_discovered_screeners()
+
+# Initialize screener configurations
+from models import get_all_screeners
+from config_loader import ConfigLoader
+
+screeners = get_all_screeners()
+print(f"[DEBUG] Initializing configs for {len(screeners)} screeners")
+
+for s in screeners:
+    screener_name = s['name']
+    print(f"[DEBUG] Processing: {screener_name}")
+
+    # Skip if config already exists in screener_configs table
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT id FROM screener_configs WHERE screener_name = ?', (screener_name,))
+    if cursor.fetchone():
+        print(f"[DEBUG] Config already exists for {screener_name}, skipping")
+        continue
+
+    # Get screener schema
+    module_name = screener_name.replace('.py', '')
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(module_name, screener_name + '.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    schema = {}
+    if hasattr(module, 'get_parameter_schema'):
+        try:
+            schema = module.get_parameter_schema()
+        except Exception as e:
+            print(f"[DEBUG] Error getting schema for {screener_name}: {e}")
+
+    if schema:
+        # Build default config
+        config = {
+            'display_name': s['display_name'],
+            'description': s.get('description', ''),
+            'category': 'technical',
+            'parameters': {}
+        }
+
+        # Initialize parameters with defaults from schema
+        for param_name, param_def in schema.items():
+            config['parameters'][param_name] = {
+                'value': param_def.get('default'),
+                'display_name': param_def.get('display_name', param_name),
+                'description': '',
+                'group': '其他',
+                'type': 'string',
+                'min': param_def.get('min'),
+                'max': param_def.get('max'),
+                'step': param_def.get('step'),
+                'default': param_def.get('default')
+            }
+
+        # Save to database
+        try:
+            import json
+            config_json = json.dumps(config)
+            schema_json = json.dumps(schema)
+
+            conn = get_db_connection()
+            cursor = conn.cursor()
+
+            # Check if config already exists
+            cursor.execute('SELECT id FROM screener_configs WHERE screener_name = ?', (screener_name,))
+            exists = cursor.fetchone()
+
+            if exists:
+                print(f"[DEBUG] Config already exists for {screener_name}, skipping")
+            else:
+                cursor.execute('''
+                    INSERT INTO screener_configs
+                    (screener_name, display_name, description, category, config_json, config_schema, current_version)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'v1.0')
+                ''', (screener_name, s['display_name'], s.get('description', ''), 'technical', config_json, schema_json))
+                conn.commit()
+                print(f"[DEBUG] Created config for {screener_name}")
+        except Exception as e:
+            print(f"[DEBUG] Error creating config for {screener_name}: {e}")
+
+    conn.close()
+
+print('[DEBUG] Config initialization complete')
+
+# API Routes
