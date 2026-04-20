@@ -44,6 +44,9 @@ frontend/dist/
 *.bak
 *.backup
 
+# TECHNICAL_DOCS 排除大型归档
+TECHNICAL_DOCS/ARCHIVES/
+
 # 其他
 cache/
 .cache/
