@@ -1,0 +1,24 @@
+{
+  "name": "neotrade2",
+  "version": "1.0.0",
+  "description": "A-share stock trading analytics system",
+  "scripts": {
+    "test": "npx playwright test",
+    "test:ui": "npx playwright test --ui",
+    "test:debug": "npx playwright test --debug",
+    "test:report": "npx playwright show-report",
+    "test:screener": "bash scripts/run_screener_tests.sh",
+    "test:quick": "bash scripts/test_screener.sh",
+    "test:interactive": "bash scripts/test_screener_interactive.sh",
+    "test:lao-ya-tou": "bash scripts/test_screener.sh lao_ya_tou_zhou_xian_screener \"老鸭头周线\"",
+    "test:coffee-cup": "bash scripts/test_screener.sh coffee_cup_handle_screener_v4 \"咖啡杯柄 V4\"",
+    "test:ashare-21": "bash scripts/test_screener.sh ashare_21_screener \"A股2.1\"",
+    "test:breakout-20day": "bash scripts/test_screener.sh breakout_20day_screener \"20天突破\"",
+    "test:breakout-main": "bash scripts/test_screener.sh breakout_main_screener \"主升浪突破\"",
+    "test:jin-feng-huang": "bash scripts/test_screener.sh jin_feng_huang_screener \"金凤凰\"",
+    "test:yin-feng-huang": "bash scripts/test_screener.sh yin_feng_huang_screener \"银凤凰\""
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1"
+  }
+}

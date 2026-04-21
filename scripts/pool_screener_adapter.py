@@ -22,22 +22,26 @@ from pathlib import Path
 import sqlite3
 
 # Add both scripts and backend directories to path
+# IMPORTANT: Insert project_root FIRST to ensure screeners/ directory is found before backend/screeners.py
 scripts_dir = str(Path(__file__).parent)
 project_root = str(Path(__file__).parent.parent)  # NeoTrade2 directory
+
+# Only insert if not already in path
 if scripts_dir not in sys.path:
     sys.path.insert(0, scripts_dir)
 if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+    sys.path.insert(1, project_root)
 
-# Now import ConfigLoader from backend
-from backend.config_loader import ConfigLoader
-
-# Import screener modules directly from screeners package
+# Import screener modules directly from screeners package FIRST
+# This must be done before importing anything from backend to avoid conflicts
 from screeners import er_ban_hui_tiao_screener
 from screeners import jin_feng_huang_screener
 from screeners import yin_feng_huang_screener
 from screeners import shi_pan_xian_screener
 from screeners import zhang_ting_bei_liang_yin_screener
+
+# Now import ConfigLoader from backend
+from backend.config_loader import ConfigLoader
 
 logger = logging.getLogger(__name__)
 
@@ -99,8 +103,10 @@ class ScreenerAdapter:
                 import_path = module_name  # Use key directly, no additional suffix
                 module = importlib.import_module(import_path)
 
-                # Get screener class (class name matches file name)
-                screener_class_name = module_name.replace('_', ' ').title().replace(' ', '') + 'Screener'
+                # Build screener class name from module name.
+                # Example: er_ban_hui_tiao_screener -> ErBanHuiTiaoScreener
+                base_name = module_name[:-9] if module_name.endswith('_screener') else module_name
+                screener_class_name = base_name.replace('_', ' ').title().replace(' ', '') + 'Screener'
                 screener_class = getattr(module, screener_class_name)
 
                 # Get screener's __init__ signature to only pass accepted parameters

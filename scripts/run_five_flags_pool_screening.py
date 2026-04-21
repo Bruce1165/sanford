@@ -29,9 +29,16 @@ sys.path.insert(0, str(Path(__file__).parent))
 # Add project root to path for screeners module
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pool_screener_adapter import ScreenerAdapter
-from database.lao_ya_tou_pool import LaoYaTouPoolRepository
-from database.lao_ya_tou_five_flags import LaoYaTouFiveFlagsRepository
+try:
+    # Preferred import path to avoid shadowing by scripts/database.py
+    from scripts.pool_screener_adapter import ScreenerAdapter
+    from scripts.database.lao_ya_tou_pool import LaoYaTouPoolRepository
+    from scripts.database.lao_ya_tou_five_flags import LaoYaTouFiveFlagsRepository
+except Exception:
+    # Backward-compatible fallback
+    from pool_screener_adapter import ScreenerAdapter
+    from database.lao_ya_tou_pool import LaoYaTouPoolRepository
+    from database.lao_ya_tou_five_flags import LaoYaTouFiveFlagsRepository
 
 logger = logging.getLogger(__name__)
 
@@ -272,6 +279,11 @@ class FiveFlagsPoolScreening:
         pools = self.get_pools_to_screen(pool_ids)
 
         logger.info(f"Starting screening for {len(pools)} pools with {len(FIVE_FLAGS_SCREENERS)} screeners")
+
+        # Safety guard: never proceed if any screener failed to load.
+        unavailable = [s for s, inst in self.adapter.screener_map.items() if inst is None]
+        if unavailable:
+            raise RuntimeError(f"Screeners unavailable: {', '.join(unavailable)}")
 
         # Process all pools with all 5 screeners
         results = self.process_pool_batch(pools)

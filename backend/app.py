@@ -6,6 +6,8 @@ import os
 import sys
 import json
 import math
+import uuid
+import subprocess
 from pathlib import Path
 from datetime import datetime, date, timedelta
 from functools import wraps
@@ -853,6 +855,705 @@ def get_monitor_pipeline():
 def get_monitor_expired():
     """Get expired picks (placeholder - returns empty for now)"""
     return safe_jsonify({'picks': []})
+
+
+def _safe_int_arg(name: str, default: int, min_value: int = None, max_value: int = None) -> int:
+    """Parse int query arg with bounds"""
+    raw = request.args.get(name, str(default))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = default
+
+    if min_value is not None:
+        value = max(min_value, value)
+    if max_value is not None:
+        value = min(max_value, value)
+    return value
+
+
+# Five-Flags API Routes (read-only, safe rollout)
+@app.route('/api/five-flags/health', methods=['GET'])
+def five_flags_health():
+    """Health summary for five-flags data readiness"""
+    try:
+        conn = get_stock_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT COUNT(*) AS cnt FROM lao_ya_tou_pool')
+        total_pools = cursor.fetchone()['cnt']
+
+        cursor.execute('SELECT COUNT(*) AS cnt FROM lao_ya_tou_pool WHERE processed = 0')
+        unprocessed_pools = cursor.fetchone()['cnt']
+
+        cursor.execute('SELECT COUNT(*) AS cnt FROM lao_ya_tou_five_flags')
+        total_results = cursor.fetchone()['cnt']
+
+        cursor.execute('SELECT MAX(screen_date) AS latest_date FROM lao_ya_tou_five_flags')
+        latest_result_date = cursor.fetchone()['latest_date']
+
+        conn.close()
+
+        status = 'healthy' if total_pools > 0 else 'warning'
+        return safe_jsonify({
+            'status': status,
+            'timestamp': datetime.now().isoformat(),
+            'pool_total_count': total_pools,
+            'pool_unprocessed_count': unprocessed_pools,
+            'result_total_count': total_results,
+            'latest_result_date': latest_result_date
+        })
+    except Exception as e:
+        return jsonify({'error': f'five-flags health check failed: {str(e)}'}), 500
+
+
+@app.route('/api/five-flags/pools', methods=['GET'])
+def five_flags_pools():
+    """List LaoYaTou pools with filters and pagination"""
+    try:
+        processed = (request.args.get('processed') or 'all').lower()
+        stock_code = request.args.get('stock_code')
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        limit = _safe_int_arg('limit', 50, min_value=1, max_value=500)
+        offset = _safe_int_arg('offset', 0, min_value=0)
+
+        where_parts = []
+        params = []
+
+        if processed in ('0', '1'):
+            where_parts.append('processed = ?')
+            params.append(int(processed))
+        elif processed != 'all':
+            return jsonify({'error': 'Invalid processed value. Use 0, 1, or all.'}), 400
+
+        if stock_code:
+            where_parts.append('stock_code = ?')
+            params.append(stock_code)
+
+        if start_date:
+            where_parts.append('end_date >= ?')
+            params.append(start_date)
+        if end_date:
+            where_parts.append('start_date <= ?')
+            params.append(end_date)
+
+        where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ''
+
+        conn = get_stock_db_connection()
+        cursor = conn.cursor()
+
+        count_sql = f'SELECT COUNT(*) AS total FROM lao_ya_tou_pool {where_sql}'
+        cursor.execute(count_sql, params)
+        total = cursor.fetchone()['total']
+
+        list_sql = f'''
+            SELECT id, stock_code, stock_name, start_date, end_date, file_name, upload_time, processed
+            FROM lao_ya_tou_pool
+            {where_sql}
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+        '''
+        cursor.execute(list_sql, [*params, limit, offset])
+        rows = cursor.fetchall()
+        conn.close()
+
+        return safe_jsonify({
+            'items': [dict(r) for r in rows],
+            'total': total,
+            'limit': limit,
+            'offset': offset
+        })
+    except Exception as e:
+        return jsonify({'error': f'failed to query five-flags pools: {str(e)}'}), 500
+
+
+@app.route('/api/five-flags/unprocessed-summary', methods=['GET'])
+def five_flags_unprocessed_summary():
+    """Summary view for unprocessed LaoYaTou pools"""
+    try:
+        conn = get_stock_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT COUNT(*) AS cnt FROM lao_ya_tou_pool WHERE processed = 0')
+        unprocessed_pools = cursor.fetchone()['cnt']
+
+        cursor.execute('''
+            SELECT file_name, COUNT(*) AS cnt
+            FROM lao_ya_tou_pool
+            WHERE processed = 0
+            GROUP BY file_name
+            ORDER BY cnt DESC, file_name ASC
+        ''')
+        by_file_name = [dict(r) for r in cursor.fetchall()]
+
+        cursor.execute('''
+            SELECT COALESCE(SUM(trading_days), 0) AS estimated_days
+            FROM (
+                SELECT p.id, COUNT(DISTINCT d.trade_date) AS trading_days
+                FROM lao_ya_tou_pool p
+                LEFT JOIN daily_prices d
+                    ON d.code = p.stock_code
+                   AND d.trade_date >= p.start_date
+                   AND d.trade_date <= p.end_date
+                WHERE p.processed = 0
+                GROUP BY p.id
+            ) t
+        ''')
+        unprocessed_dates_estimate = cursor.fetchone()['estimated_days']
+        conn.close()
+
+        return safe_jsonify({
+            'unprocessed_pools': unprocessed_pools,
+            'unprocessed_dates_estimate': unprocessed_dates_estimate,
+            'by_file_name': by_file_name
+        })
+    except Exception as e:
+        return jsonify({'error': f'failed to build unprocessed summary: {str(e)}'}), 500
+
+
+@app.route('/api/five-flags/results', methods=['GET'])
+def five_flags_results():
+    """Query five-flags result records with filters and pagination"""
+    try:
+        pool_id = request.args.get('pool_id')
+        stock_code = request.args.get('stock_code')
+        screener_id = request.args.get('screener_id')
+        from_date = request.args.get('from')
+        to_date = request.args.get('to')
+        sort = (request.args.get('sort') or 'screen_date:desc').lower()
+        limit = _safe_int_arg('limit', 50, min_value=1, max_value=500)
+        offset = _safe_int_arg('offset', 0, min_value=0)
+
+        order_by = 'screen_date DESC, stock_code ASC'
+        if sort == 'screen_date:asc':
+            order_by = 'screen_date ASC, stock_code ASC'
+
+        where_parts = []
+        params = []
+
+        if pool_id:
+            try:
+                where_parts.append('pool_id = ?')
+                params.append(int(pool_id))
+            except ValueError:
+                return jsonify({'error': 'pool_id must be integer'}), 400
+        if stock_code:
+            where_parts.append('stock_code = ?')
+            params.append(stock_code)
+        if screener_id:
+            where_parts.append('screener_id = ?')
+            params.append(screener_id)
+        if from_date:
+            where_parts.append('screen_date >= ?')
+            params.append(from_date)
+        if to_date:
+            where_parts.append('screen_date <= ?')
+            params.append(to_date)
+
+        where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ''
+
+        conn = get_stock_db_connection()
+        cursor = conn.cursor()
+
+        count_sql = f'SELECT COUNT(*) AS total FROM lao_ya_tou_five_flags {where_sql}'
+        cursor.execute(count_sql, params)
+        total = cursor.fetchone()['total']
+
+        list_sql = f'''
+            SELECT id, pool_id, screener_id, stock_code, stock_name, screen_date,
+                   close_price, match_reason, extra_data, created_at
+            FROM lao_ya_tou_five_flags
+            {where_sql}
+            ORDER BY {order_by}
+            LIMIT ? OFFSET ?
+        '''
+        cursor.execute(list_sql, [*params, limit, offset])
+        rows = cursor.fetchall()
+        conn.close()
+
+        items = []
+        for row in rows:
+            record = dict(row)
+            if record.get('extra_data'):
+                try:
+                    record['extra_data'] = json.loads(record['extra_data'])
+                except Exception:
+                    pass
+            items.append(record)
+
+        return safe_jsonify({
+            'items': items,
+            'total': total,
+            'limit': limit,
+            'offset': offset,
+            'dedupe_key': ['stock_code', 'screener_id', 'screen_date']
+        })
+    except Exception as e:
+        return jsonify({'error': f'failed to query five-flags results: {str(e)}'}), 500
+
+
+@app.route('/api/five-flags/timeline', methods=['GET'])
+def five_flags_timeline():
+    """Timeline grouped by date for one stock"""
+    stock_code = request.args.get('stock_code')
+    if not stock_code:
+        return jsonify({'error': 'stock_code is required'}), 400
+
+    from_date = request.args.get('from')
+    to_date = request.args.get('to')
+
+    try:
+        conn = get_stock_db_connection()
+        cursor = conn.cursor()
+
+        where_parts = ['stock_code = ?']
+        params = [stock_code]
+        if from_date:
+            where_parts.append('screen_date >= ?')
+            params.append(from_date)
+        if to_date:
+            where_parts.append('screen_date <= ?')
+            params.append(to_date)
+
+        where_sql = ' AND '.join(where_parts)
+        cursor.execute(
+            f'''
+            SELECT screen_date, screener_id, match_reason, close_price, pool_id, created_at
+            FROM lao_ya_tou_five_flags
+            WHERE {where_sql}
+            ORDER BY screen_date ASC, screener_id ASC
+            ''',
+            params
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        timeline_map = {}
+        for row in rows:
+            d = row['screen_date']
+            if d not in timeline_map:
+                timeline_map[d] = {
+                    'date': d,
+                    'hits': [],
+                    'details': []
+                }
+            timeline_map[d]['hits'].append(row['screener_id'])
+            timeline_map[d]['details'].append({
+                'screener_id': row['screener_id'],
+                'match_reason': row['match_reason'],
+                'close_price': row['close_price'],
+                'pool_id': row['pool_id'],
+                'created_at': row['created_at']
+            })
+
+        timeline = [timeline_map[k] for k in sorted(timeline_map.keys())]
+        return safe_jsonify({'stock_code': stock_code, 'timeline': timeline})
+    except Exception as e:
+        return jsonify({'error': f'failed to query timeline: {str(e)}'}), 500
+
+
+def _load_five_flags_progress():
+    """Load five-flags progress file if present"""
+    progress_path = DASHBOARD_DIR.parent / 'data' / 'five_flags_screening_progress.json'
+    if not progress_path.exists():
+        return None
+    try:
+        with open(progress_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _five_flags_runs_registry_path():
+    """Runs registry path for five-flags API"""
+    return DASHBOARD_DIR.parent / 'data' / 'five_flags_runs.json'
+
+
+def _load_five_flags_runs_registry():
+    """Load persisted run metadata list"""
+    path = _five_flags_runs_registry_path()
+    if not path.exists():
+        return []
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return []
+
+
+def _save_five_flags_runs_registry(runs):
+    """Persist run metadata list"""
+    path = _five_flags_runs_registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Keep latest 200 records to bound file size
+    runs = sorted(runs, key=lambda r: r.get('requested_at') or '', reverse=True)[:200]
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(runs, f, ensure_ascii=False, indent=2)
+
+
+def _is_pid_running(pid):
+    """Check whether a process id exists"""
+    if not pid:
+        return False
+    try:
+        pid_int = int(pid)
+        os.kill(pid_int, 0)
+        # Treat zombie as not running; avoids stale "running" status forever.
+        try:
+            import subprocess as _sp
+            stat = _sp.check_output(['ps', '-o', 'stat=', '-p', str(pid_int)], text=True).strip()
+            if stat.startswith('Z'):
+                return False
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _refresh_five_flags_run_registry(runs):
+    """Refresh status from process existence (read-only check)"""
+    changed = False
+    now_ts = datetime.now().isoformat()
+    for run in runs:
+        status = run.get('status')
+        if status in ('running', 'accepted'):
+            pid = run.get('pid')
+            if pid and _is_pid_running(pid):
+                if status != 'running':
+                    run['status'] = 'running'
+                    changed = True
+            else:
+                if status != 'completed' and status != 'failed':
+                    # Determine failed/completed from log content when possible.
+                    log_file = run.get('log_file')
+                    failed = False
+                    if log_file:
+                        try:
+                            with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
+                                content = f.read()
+                            failed_markers = ['Traceback (most recent call last):', 'ModuleNotFoundError', 'ERROR']
+                            failed = any(m in content for m in failed_markers)
+                        except Exception:
+                            failed = False
+                    run['status'] = 'failed' if failed else 'completed'
+                    run['completed_at'] = run.get('completed_at') or now_ts
+                    changed = True
+    if changed:
+        _save_five_flags_runs_registry(runs)
+    return runs
+
+
+def _start_five_flags_run(pool_ids=None, max_workers=None, dry_run=False, retry_of=None, snapshot_id=None):
+    """
+    Start five-flags screening subprocess in controlled async mode.
+    Returns dict payload for API response.
+    """
+    project_root = DASHBOARD_DIR.parent
+    script_path = project_root / 'scripts' / 'run_five_flags_pool_screening.py'
+    if not script_path.exists():
+        raise FileNotFoundError(f'five-flags script not found: {script_path}')
+
+    run_id = f'ffrun_{datetime.now().strftime("%Y%m%d_%H%M%S")}_{uuid.uuid4().hex[:8]}'
+
+    # dry_run only validates input and returns accepted preview; no process started
+    if dry_run:
+        return {
+            'run_id': run_id,
+            'status': 'dry_run',
+            'queued_pools': len(pool_ids or []),
+            'snapshot_id': snapshot_id,
+            'dry_run': True
+        }
+
+    cmd = [sys.executable, str(script_path)]
+    if max_workers is not None:
+        cmd.extend(['--max-workers', str(max_workers)])
+    if pool_ids:
+        cmd.extend(['--pool-ids', ','.join(str(x) for x in pool_ids)])
+
+    logs_dir = project_root / 'logs'
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_file = logs_dir / f'five_flags_run_{run_id}.log'
+
+    # Launch detached-ish subprocess and redirect output to file
+    log_fp = open(log_file, 'a', encoding='utf-8')
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(project_root),
+        stdout=log_fp,
+        stderr=log_fp
+    )
+    log_fp.close()
+
+    runs = _load_five_flags_runs_registry()
+    record = {
+        'run_id': run_id,
+        'status': 'running',
+        'requested_at': datetime.now().isoformat(),
+        'started_at': datetime.now().isoformat(),
+        'completed_at': None,
+        'pid': proc.pid,
+        'pool_ids': pool_ids or [],
+        'max_workers': max_workers,
+        'retry_of': retry_of,
+        'dry_run': False,
+        'log_file': str(log_file),
+        'command': cmd
+    }
+    runs.append(record)
+    _save_five_flags_runs_registry(runs)
+
+    return {
+        'run_id': run_id,
+        'status': 'accepted',
+        'queued_pools': len(pool_ids or []),
+        'pid': proc.pid,
+        'dry_run': False
+    }
+
+
+def _build_five_flags_run_view(run_id: str = 'latest'):
+    """Build run metadata from progress file + DB summary (read-only compatibility mode)"""
+    progress = _load_five_flags_progress() or {}
+
+    start_time = progress.get('start_time')
+    last_update = progress.get('last_update')
+    total_stocks = int(progress.get('total_stocks') or 0)
+    processed_stocks = int(progress.get('processed_stocks') or 0)
+    failed_stocks = int(progress.get('failed_stocks') or 0)
+    statistics = progress.get('statistics') or {}
+    total_matches = int(statistics.get('total_matches') or 0)
+    by_screener = statistics.get('by_screener') or {}
+
+    # Fallback to database if progress file is missing or empty
+    conn = get_stock_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute('SELECT COUNT(*) AS cnt FROM lao_ya_tou_pool')
+    db_total_pools = cursor.fetchone()['cnt']
+    cursor.execute('SELECT COUNT(*) AS cnt FROM lao_ya_tou_pool WHERE processed = 1')
+    db_processed_pools = cursor.fetchone()['cnt']
+    cursor.execute('SELECT COUNT(*) AS cnt FROM lao_ya_tou_pool WHERE processed = 0')
+    db_unprocessed_pools = cursor.fetchone()['cnt']
+    cursor.execute('SELECT COUNT(*) AS cnt FROM lao_ya_tou_five_flags')
+    db_total_matches = cursor.fetchone()['cnt']
+    cursor.execute('SELECT MAX(created_at) AS latest_created_at FROM lao_ya_tou_five_flags')
+    latest_created_at = cursor.fetchone()['latest_created_at']
+    conn.close()
+
+    if total_stocks <= 0:
+        total_stocks = db_total_pools
+    if processed_stocks <= 0 and db_processed_pools > 0:
+        processed_stocks = db_processed_pools
+    if total_matches <= 0:
+        total_matches = db_total_matches
+
+    if failed_stocks < 0:
+        failed_stocks = 0
+
+    if total_stocks > 0:
+        percent = round((processed_stocks / total_stocks) * 100, 2)
+    else:
+        percent = 0.0
+
+    status = 'completed'
+    if total_stocks == 0 and db_unprocessed_pools > 0:
+        status = 'pending'
+    elif start_time and (not last_update or db_unprocessed_pools > 0):
+        status = 'running' if processed_stocks < total_stocks else 'completed'
+    elif db_unprocessed_pools > 0 and processed_stocks < total_stocks:
+        status = 'partial'
+
+    run = {
+        'run_id': run_id,
+        'status': status,
+        'started_at': start_time,
+        'last_update': last_update or latest_created_at,
+        'completed_at': latest_created_at if status == 'completed' else None,
+        'total_stocks': total_stocks,
+        'processed_stocks': processed_stocks,
+        'failed_stocks': failed_stocks,
+        'total_matches': total_matches,
+        'by_screener': by_screener,
+        'source': 'progress_file+db_aggregate'
+    }
+    run['progress'] = {
+        'percent': percent,
+        'processed_stocks': processed_stocks,
+        'total_stocks': total_stocks
+    }
+    return run
+
+
+@app.route('/api/five-flags/runs', methods=['GET'])
+def five_flags_runs():
+    """List five-flags runs"""
+    try:
+        limit = _safe_int_arg('limit', 20, min_value=1, max_value=100)
+        offset = _safe_int_arg('offset', 0, min_value=0)
+        status_filter = (request.args.get('status') or '').strip().lower()
+
+        runs = _refresh_five_flags_run_registry(_load_five_flags_runs_registry())
+        items = sorted(runs, key=lambda r: r.get('requested_at') or '', reverse=True)
+        if not items:
+            # Backward-compatible fallback when registry does not exist yet
+            items = [_build_five_flags_run_view('latest')]
+        if status_filter:
+            items = [r for r in items if r.get('status') == status_filter]
+
+        total = len(items)
+        paged = items[offset:offset + limit]
+        return safe_jsonify({
+            'items': paged,
+            'total': total,
+            'limit': limit,
+            'offset': offset
+        })
+    except Exception as e:
+        return jsonify({'error': f'failed to query five-flags runs: {str(e)}'}), 500
+
+
+@app.route('/api/five-flags/runs/<run_id>', methods=['GET'])
+def five_flags_run_detail(run_id):
+    """Get five-flags run detail"""
+    try:
+        runs = _refresh_five_flags_run_registry(_load_five_flags_runs_registry())
+        run = next((r for r in runs if r.get('run_id') == run_id), None)
+        if run is None:
+            if run_id == 'latest':
+                run = _build_five_flags_run_view('latest')
+            else:
+                return jsonify({'error': f'run_id not found: {run_id}'}), 404
+
+        if 'progress' not in run:
+            total = int(run.get('total_stocks') or 0)
+            done = int(run.get('processed_stocks') or 0)
+            run['progress'] = {
+                'percent': round((done / total) * 100, 2) if total > 0 else 0.0,
+                'processed_stocks': done,
+                'total_stocks': total
+            }
+        return safe_jsonify({
+            'run': run,
+            'progress': run.get('progress', {}),
+            'stats': {
+                'total_matches': run.get('total_matches', 0),
+                'by_screener': run.get('by_screener', {})
+            },
+            'errors': []
+        })
+    except Exception as e:
+        return jsonify({'error': f'failed to query run detail: {str(e)}'}), 500
+
+
+@app.route('/api/five-flags/run', methods=['POST'])
+def five_flags_run():
+    """Start five-flags screening task asynchronously"""
+    try:
+        payload = request.get_json(silent=True) or {}
+        pool_ids = payload.get('pool_ids') or []
+        dry_run = bool(payload.get('dry_run', False))
+        max_workers = payload.get('max_workers')
+
+        if pool_ids and not isinstance(pool_ids, list):
+            return jsonify({'error': 'pool_ids must be an array of integers'}), 400
+        normalized_pool_ids = []
+        for pid in pool_ids:
+            try:
+                v = int(pid)
+            except (TypeError, ValueError):
+                return jsonify({'error': f'invalid pool_id: {pid}'}), 400
+            if v <= 0:
+                return jsonify({'error': f'invalid pool_id: {pid}'}), 400
+            normalized_pool_ids.append(v)
+
+        if max_workers is not None:
+            try:
+                max_workers = int(max_workers)
+            except (TypeError, ValueError):
+                return jsonify({'error': 'max_workers must be integer'}), 400
+            max_workers = max(1, min(8, max_workers))
+
+        # Guard: allow only one active run to avoid dashboard resource contention
+        runs = _refresh_five_flags_run_registry(_load_five_flags_runs_registry())
+        active = next((r for r in runs if r.get('status') in ('running', 'accepted')), None)
+        if active and _is_pid_running(active.get('pid')):
+            return jsonify({
+                'error': 'five-flags run already in progress',
+                'active_run_id': active.get('run_id')
+            }), 409
+
+        result = _start_five_flags_run(
+            pool_ids=normalized_pool_ids,
+            max_workers=max_workers,
+            dry_run=dry_run,
+            snapshot_id=payload.get('snapshot_id')
+        )
+        return safe_jsonify(result), 202
+    except FileNotFoundError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        return jsonify({'error': f'failed to start five-flags run: {str(e)}'}), 500
+
+
+@app.route('/api/five-flags/retry-failed', methods=['POST'])
+def five_flags_retry_failed():
+    """Retry failed pool items by explicit pool_ids (safe wrapper over /run)"""
+    try:
+        payload = request.get_json(silent=True) or {}
+        pool_ids = payload.get('pool_ids') or []
+        if not pool_ids:
+            return jsonify({'error': 'pool_ids is required for retry'}), 400
+        if not isinstance(pool_ids, list):
+            return jsonify({'error': 'pool_ids must be an array of integers'}), 400
+
+        normalized_pool_ids = []
+        for pid in pool_ids:
+            try:
+                v = int(pid)
+            except (TypeError, ValueError):
+                return jsonify({'error': f'invalid pool_id: {pid}'}), 400
+            if v <= 0:
+                return jsonify({'error': f'invalid pool_id: {pid}'}), 400
+            normalized_pool_ids.append(v)
+
+        max_workers = payload.get('max_workers')
+        if max_workers is not None:
+            try:
+                max_workers = int(max_workers)
+            except (TypeError, ValueError):
+                return jsonify({'error': 'max_workers must be integer'}), 400
+            max_workers = max(1, min(8, max_workers))
+
+        runs = _refresh_five_flags_run_registry(_load_five_flags_runs_registry())
+        active = next((r for r in runs if r.get('status') in ('running', 'accepted')), None)
+        if active and _is_pid_running(active.get('pid')):
+            return jsonify({
+                'error': 'five-flags run already in progress',
+                'active_run_id': active.get('run_id')
+            }), 409
+
+        result = _start_five_flags_run(
+            pool_ids=normalized_pool_ids,
+            max_workers=max_workers,
+            dry_run=False,
+            retry_of=payload.get('run_id')
+        )
+        return safe_jsonify({
+            'retry_run_id': result.get('run_id'),
+            'status': result.get('status'),
+            'retry_count': len(normalized_pool_ids)
+        }), 202
+    except FileNotFoundError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        return jsonify({'error': f'failed to retry failed pools: {str(e)}'}), 500
 
 
 if __name__ == '__main__':

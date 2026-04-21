@@ -4,7 +4,7 @@ import './cockpit.css';
 import * as echarts from 'echarts';
 import { createChart, CandlestickSeries, HistogramSeries, LineSeries, ColorType, CrosshairMode } from 'lightweight-charts';
 import { formatDate, formatStockCode, isValidDate, isValidStockCode, toISODate } from './utils/format';
-import Monitor from './pages/MonitorV2';
+import FiveFlagsMonitor from './pages/FiveFlagsMonitor';
 import { CalendarWithButton } from './components/Calendar';
 import { ScreenerConfig } from './components/ScreenerConfig';
 
@@ -229,9 +229,9 @@ function App() {
         </section>
 
         {/* RIGHT — Monitoring (40%) */}
-        <section className="neo-col-right">
-          <Monitor selectedScreener={selectedScreener} />
-        </section>
+          <section className="neo-col-right">
+            <FiveFlagsMonitor />
+          </section>
 
       </div>
 

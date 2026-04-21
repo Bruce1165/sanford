@@ -1,134 +1,102 @@
-# 老鸭头五旗股票池筛选功能需求
+# 老鸭头五图主线需求基线（v1）
 
-## 功能概述
+> 版本：v1  
+> 状态：生效中（作为后续开发与验收唯一主线）  
+> 更新日期：2026-04-19
 
-老鸭头五旗股票池筛选系统对老鸭头股票池中的未处理股票进行技术分析，筛选出符合特定形态的股票，并记录到老鸭头五旗股票池数据库表。
+## 1. 项目主线目标
 
-## 筛选器定义
+本项目服务于投资团队 A 股选股工作，核心目标是：
 
-系统包含以下5个筛选器（按技术形态分类）：
+1. 以团队内部定义的筛选器为核心，持续输出稳定、可复现、可解释的候选股票池。
+2. 通过参数可调与历史回放能力，使机器筛选结果逐步逼近团队人工筛选标准。
+3. 通过“老鸭头预筛池 + 五图持续跟踪”机制，为团队提供更聚焦的重点跟踪池。
 
-### 1. 二板回调 (er_ban_hui_tiao)
-- **技术特征**: 连续两个涨停板后出现回调
-- **筛选逻辑**: 识别T日涨停、T+1日涨停、T+2日或之后回调的形态
-- **关键参数**: 涨停价格、回调幅度、成交量
+## 2. 主线功能范围
 
-### 2. 金凤凰 (jin_feng_huang)
-- **技术特征**: 5日内形成金凤凰形态
-- **筛选逻辑**: 识别T日涨停，T+5日内再次涨停的形态
-- **关键参数**: 信号日日期、启动日价格
+### 2.1 七个核心筛选器（主线）
 
-### 3. 银凤凰 (yin_feng_huang)
-- **技术特征**: 4日内形成银凤凰形态
-- **筛选逻辑**: 识别T日涨停，T+4日内再次涨停的形态
-- **关键参数**: 信号日日期、启动日价格
+1. 咖啡杯柄 V4
+2. 每日冷热股
+3. 二板回调
+4. 涨停试盘线
+5. 涨停倍量阴
+6. 涨停金凤凰
+7. 涨停银凤凰
 
-### 4. 试盘线 (shi_pan_xian)
-- **技术特征**: 高量试盘后涨停
-- **筛选逻辑**: 识别高量试盘日、涨停日的组合形态
-- **关键参数**: 高量日期、涨停日期
+### 2.2 五图定义（老鸭头池专用）
 
-### 5. 涨停倍量阴 (zhang_ting_bei_liang_yin)
-- **技术特征**: 涨停后倍量阴线
-- **筛选逻辑**: 识别涨停日之后出现倍量阴线的形态
-- **关键参数**: 涨停价格、阴线成交量倍数
+在老鸭头股票池基础上运行以下五个筛选器：
 
-## 核心业务逻辑
+1. 二板回调（`er_ban_hui_tiao`）
+2. 涨停试盘线（`shi_pan_xian`）
+3. 涨停倍量阴（`zhang_ting_bei_liang_yin`）
+4. 涨停金凤凰（`jin_feng_huang`）
+5. 涨停银凤凰（`yin_feng_huang`）
 
-### 股票起止时间核查（CRITICAL）
+## 3. 数据基础与双数据源约束
 
-**必须遵守的规则**：
-1. 对于老鸭头股票池中的每只股票，获取其start_date和end_date
-2. 查询股票在start_date到end_date之间的所有交易日（含起止日期）
-3. 对于每个交易日，调用相应的筛选器进行核查
-4. **不得修改此逻辑** - 每个交易日都必须核查一遍
+五图运行依赖两个数据源，缺一不可：
 
-**实现要点**：
-- 使用get_trading_days方法从daily_prices表获取交易日列表
-- 遍历每个交易日，调用adapter.check_stock方法
-- check_stock方法设置screener.current_date后调用screener.screen_stock
+1. 股票数据库（18 个月历史 + 每日增量）
+2. 老鸭头股票池数据库（含 `start_date/end_date/processed`）
 
-### 筛选流程
+后续所有开发、验证、回归，必须明确区分并同时验证这两个数据源链路。
 
-```
-for each pool in unprocessed_pools:
-    for each screener in 5 screeners:
-        trading_days = get_trading_days(pool.stock_code, pool.start_date, pool.end_date)
-        for each trade_date in trading_days:
-            result = adapter.check_stock(
-                screener_id=screener,
-                stock_code=pool.stock_code,
-                stock_name=pool.stock_name,
-                date=trade_date
-            )
-            if result and result['matched']:
-                insert_to_lao_ya_tou_five_flags_table(
-                    pool_id=pool.id,
-                    screener_id=screener,
-                    stock_code=pool.stock_code,
-                    stock_name=pool.stock_name,
-                    screen_date=trade_date,
-                    close_price=result['price'],
-                    match_reason=result['reason']
-                )
-                break  # 该股票该筛选器找到匹配后，继续下一个筛选器
-```
+## 4. CHECK 回放主逻辑（必须保持）
 
-### 数据写入规则
+对老鸭头池中的未处理记录执行回放核查：
 
-符合条件的匹配写入lao_ya_tou_five_flags表：
+1. 读取单条池记录的 `stock_code/start_date/end_date`
+2. 枚举起止区间内全部交易日（含边界）
+3. 对每个交易日运行五图筛选器 CHECK
+4. 命中则写入五图结果池
+5. 完成后推进 `processed` 状态
 
-- pool_id: 老鸭头股票池记录ID
-- screener_id: 筛选器ID (5个之一)
-- stock_code: 股票代码
-- stock_name: 股票名称
-- screen_date: 筛选日期（交易日）
-- close_price: 收盘价格
-- match_reason: 匹配原因描述
+说明：该逻辑是业务闭环核心，不得在未评审前随意改写。
 
-## 数据库表结构
+## 5. 去重规则（强制）
 
-### lao_ya_tou_pool（老鸭头股票池）
-- id: 主键
-- stock_code: 股票代码
-- stock_name: 股票名称
-- start_date: 开始日期
-- end_date: 结束日期
-- file_name: 来源文件名
-- processed: 是否已处理 (0-未处理, 1-已处理)
+重复定义为三个字段同时重合：
 
-### lao_ya_tou_five_flags（老鸭头五旗股票池）
-- id: 主键
-- pool_id: 关联老鸭头股票池ID
-- screener_id: 筛选器ID
-- stock_code: 股票代码
-- stock_name: 股票名称
-- screen_date: 筛选日期
-- close_price: 收盘价格
-- match_reason: 匹配原因
-- created_at: 创建时间
+- `stock_code`
+- `screener_id`
+- `screen_date`
 
-## 性能要求
+即：`股票 + 筛选器 + 日期` 三键相同，视为重复，必须拦截。
 
-- 使用ThreadPoolExecutor进行并行筛选，提升处理效率
-- 批量插入数据库（BATCH_INSERT_SIZE=100），减少IO次数
-- 支持进度检查点保存，支持中断后恢复
-- 完整筛选完成后，标记lao_ya_tou_pool表中的processed=1
+## 6. 参数管理原则（强制）
 
-## 调度与监控
+1. 参数调整必须可追溯（参数版本、变更时间、变更说明）。
+2. 同一参数快照必须可在两个数据源链路复现。
+3. 参数变更后必须通过回放样本验证后才能进入发布流程。
+4. 不允许“只在一侧生效”的参数状态长期存在。
 
-- 记录每个筛选器的调用次数、成功次数、失败次数
-- 计算平均处理时间
-- 记录处理进度（已处理股票数/总股票数）
-- 日志记录关键事件（开始、完成、错误）
+## 7. 当前关键风险
 
-## 相关文档
+1. 五图逻辑仅完成初步验证，尚未完成完整闭环验证。
+2. 参数在双数据源链路中的生效一致性曾出现回归风险。
+3. UI 迭代曾导致文件破损与功能回滚，后续必须限制改动范围。
 
-- 老鸭头股票池数据库设计: `TECHNICAL_DOCS/components/screening/lao_ya_tou_db_classifier.md`
-- 筛选器集成伪代码: `TECHNICAL_DOCS/components/screening/pool_screeners_integration_pseudocode.md`
-- 筛选器适配器: `scripts/pool_screener_adapter.py`
-- 筛选运行脚本: `scripts/run_five_flags_pool_screening.py`
+## 8. 冻结与改动边界
 
-## 版本历史
+为降低回归风险，执行以下边界：
 
-- 2026-04-19: 初始版本，明确5个筛选器定义和核心业务逻辑
+1. 冻结 `Data Health` 区域与主布局骨架。
+2. 五图迭代仅允许改动五图相关 API、脚本、右侧展示模块。
+3. 禁止大范围全局样式改造。
+4. 禁止改动历史归档目录中的文件。
+
+## 9. 验收总标准（主线）
+
+1. 同输入同参数快照，输出稳定一致。
+2. 三键去重严格生效。
+3. 参数调整可双链路复现与解释。
+4. CHECK 回放闭环完整（可执行、可复跑、可追溯）。
+5. 发布后可快速验证与回滚，避免长时间页面/发布调试消耗。
+
+## 10. 关联文档
+
+1. 验证与门禁手册：`TECHNICAL_DOCS/components/screening/lao_ya_tou_ui_design.md`
+2. 发布与回滚手册：`TECHNICAL_DOCS/reference/operations_guide.md`
+3. 迭代记录与决策日志：`TECHNICAL_DOCS/system/05_project_management.md`
