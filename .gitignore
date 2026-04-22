@@ -12,6 +12,7 @@ yarn-debug.log*
 # IDE
 .vscode/
 .idea/
+.tours/
 
 # 操作系统
 .DS_Store
@@ -50,6 +51,7 @@ TECHNICAL_DOCS/ARCHIVES/
 # 其他
 cache/
 .cache/
+docs/学习资料/
 
 # 测试
 __pycache__/

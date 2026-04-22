@@ -1,0 +1,12 @@
+﻿screener,directory_exists,total_files,date_range,missing_days,file_corruption,notes
+coffee_cup,True,1,2026-04-02 to 2026-04-02,0 (0.0%),None,OK
+er_ban_hui_tiao,True,2,2026-04-03 to 2026-04-07,1 (33.3%),None,OK
+jin_feng_huang,False,0,N/A,N/A,N/A,Directory not found: /Users/mac/NeoTrade2/data/screeners/jin_feng_huang
+yin_feng_huang,False,0,N/A,N/A,N/A,Directory not found: /Users/mac/NeoTrade2/data/screeners/yin_feng_huang
+shi_pan_xian,False,0,N/A,N/A,N/A,Directory not found: /Users/mac/NeoTrade2/data/screeners/shi_pan_xian
+zhang_ting_bei_liang_yin,False,0,N/A,N/A,N/A,Directory not found: /Users/mac/NeoTrade2/data/screeners/zhang_ting_bei_liang_yin
+breakout_20day,False,0,N/A,N/A,N/A,Directory not found: /Users/mac/NeoTrade2/data/screeners/breakout_20day
+breakout_main,False,0,N/A,N/A,N/A,Directory not found: /Users/mac/NeoTrade2/data/screeners/breakout_main
+daily_hot_cold,False,0,N/A,N/A,N/A,Directory not found: /Users/mac/NeoTrade2/data/screeners/daily_hot_cold
+shuang_shou_ban,False,0,N/A,N/A,N/A,Directory not found: /Users/mac/NeoTrade2/data/screeners/shuang_shou_ban
+ashare_21,False,0,N/A,N/A,N/A,Directory not found: /Users/mac/NeoTrade2/data/screeners/ashare_21

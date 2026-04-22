@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>股票预测 Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        .header { background: #1890ff; color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+        .section { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+        .section h2 { margin-bottom: 15px; color: #333; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #eee; }
+        th { background: #fafafa; font-weight: 600; }
+        .prob-high { color: #52c41a; font-weight: 600; }
+        .prob-medium { color: #faad14; }
+        .rank { background: #1890ff; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+        .metric { display: inline-block; margin-right: 30px; }
+        .metric-value { font-size: 24px; font-weight: 600; color: #1890ff; }
+        .metric-label { font-size: 14px; color: #666; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📈 股票预测 Dashboard</h1>
+            <p>最新预测日期: {{ latest_date or '暂无数据' }}</p>
+        </div>
+
+        <div class="section">
+            <h2>📊 模型性能</h2>
+            {% if model_perf %}
+                <div style="margin-bottom: 15px;">
+                    {% for p in model_perf[:1] %}
+                    <span class="metric">
+                        <div class="metric-value">{{ "%.2f"|format(p[4]*100) }}%</div>
+                        <div class="metric-label">Precision</div>
+                    </span>
+                    <span class="metric">
+                        <div class="metric-value">{{ "%.2f"|format(p[5]*100) }}%</div>
+                        <div class="metric-label">Recall</div>
+                    </span>
+                    <span class="metric">
+                        <div class="metric-value">{{ "%.4f"|format(p[7]) }}</div>
+                        <div class="metric-label">AUC</div>
+                    </span>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <p>暂无性能数据</p>
+            {% endif %}
+        </div>
+
+        <div class="section">
+            <h2>🔥 Top 50 预测</h2>
+            {% if predictions %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>排名</th>
+                        <th>代码</th>
+                        <th>名称</th>
+                        <th>预测概率</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for p in predictions[:50] %}
+                    <tr>
+                        <td><span class="rank">{{ p[4] }}</span></td>
+                        <td>{{ p[0] }}</td>
+                        <td>{{ p[1] }}</td>
+                        <td class="{% if p[2] > 0.3 %}prob-high{% elif p[2] > 0.15 %}prob-medium{% endif %}">
+                            {{ "%.2f"|format(p[2]*100) }}%
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p>暂无预测数据，请先运行预测脚本</p>
+            {% endif %}
+        </div>
+    </div>
+</body>
+</html>
