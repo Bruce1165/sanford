@@ -54,6 +54,16 @@ cache/
 # 测试
 __pycache__/
 .pytest_cache/
+.coverage
+playwright-report/
+test-results/
 
 # 特定文件
 config/.env.local
+
+# 本地运行数据与历史归档（保持本地，不入库）
+data/
+ARCHIVES/
+archive/
+VERSIONS/
+backup_screeners_20260404_124944/
