@@ -1,0 +1,18 @@
+# latest_trade_date: 2026-04-22
+# count: 15
+# usage: python3 scripts/update_stock_metadata.py --codes-file scripts/cron/stock_meta_retry_codes.txt --login-retry 5 --query-retry 4 --retry-delay 1.2
+000004
+000821
+000903
+000908
+000909
+002538
+002542
+002598
+300081
+300123
+300385
+600082
+600581
+603429
+688270

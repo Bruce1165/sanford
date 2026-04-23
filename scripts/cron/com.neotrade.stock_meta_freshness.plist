@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.neotrade.stock_meta_freshness</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/mac/NeoTrade2/scripts/cron/stock_meta_freshness_task.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/mac/NeoTrade2</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/mac/NeoTrade2/logs/stock_meta_freshness.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/mac/NeoTrade2/logs/stock_meta_freshness_error.log</string>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>22</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>KeepAlive</key>
+    <false/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>/Users/mac/NeoTrade2</string>
+    </dict>
+
+    <key>AbandonProcessGroup</key>
+    <true/>
+</dict>
+</plist>

@@ -8,9 +8,14 @@ import json
 import math
 import uuid
 import subprocess
+import threading
+import time
+import smtplib
+import ssl
 from pathlib import Path
 from datetime import datetime, date, timedelta
 from functools import wraps
+from email.message import EmailMessage
 
 from flask import Flask, jsonify, request, send_from_directory, Response
 from flask_cors import CORS
@@ -37,7 +42,7 @@ from models import (
 )
 
 # Import excel upload handler
-from excel_upload import handle_excel_upload
+from excel_upload import handle_excel_upload, handle_lao_ya_tou_pool_upload
 
 # Import screeners module
 import importlib.util
@@ -75,6 +80,102 @@ def safe_jsonify(data):
         json.dumps(data, cls=SafeJSONEncoder, ensure_ascii=False),
         mimetype='application/json'
     )
+
+
+FIVE_FLAGS_TIMELINE_SCREENERS = [
+    {
+        'screener_id': 'shi_pan_xian',
+        'label': '试盘线',
+        'aliases': ['试盘线', '涨停试盘线', 'shi_pan_xian', 'shipanxian', 'test_line'],
+    },
+    {
+        'screener_id': 'jin_feng_huang',
+        'label': '金凤凰',
+        'aliases': ['金凤凰', '涨停金凤凰', 'jin_feng_huang', 'jinfenghuang', 'golden_phoenix'],
+    },
+    {
+        'screener_id': 'yin_feng_huang',
+        'label': '银凤凰',
+        'aliases': ['银凤凰', '涨停银凤凰', 'yin_feng_huang', 'yinfenghuang', 'silver_phoenix'],
+    },
+    {
+        'screener_id': 'zhang_ting_bei_liang_yin',
+        'label': '倍量阴',
+        'aliases': ['倍量阴', '涨停倍量阴', 'zhang_ting_bei_liang_yin', 'beiliangyin', 'double_volume_bear'],
+    },
+    {
+        'screener_id': 'er_ban_hui_tiao',
+        'label': '二板回调',
+        'aliases': ['二板回调', 'er_ban_hui_tiao', 'erbanhuitiao', 'second_board_pullback'],
+    },
+]
+
+
+def _normalize_screener_token(value):
+    return str(value or '').strip().lower().replace(' ', '').replace('-', '').replace('_', '')
+
+
+def _resolve_five_flags_screener_id(value):
+    source = _normalize_screener_token(value)
+    for item in FIVE_FLAGS_TIMELINE_SCREENERS:
+        for alias in item['aliases']:
+            if _normalize_screener_token(alias) == source:
+                return item['screener_id']
+    return None
+
+
+def _parse_bool_arg(name: str, default: bool = False) -> bool:
+    value = request.args.get(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
+
+
+def _iter_dates(start_date: str, end_date: str):
+    cursor = datetime.strptime(start_date, '%Y-%m-%d').date()
+    end = datetime.strptime(end_date, '%Y-%m-%d').date()
+    while cursor <= end:
+        yield cursor.strftime('%Y-%m-%d')
+        cursor += timedelta(days=1)
+
+
+def _to_native_bool(value) -> bool:
+    """Convert numpy/pandas bool-like values to native Python bool."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    item = getattr(value, 'item', None)
+    if callable(item):
+        try:
+            value = item()
+        except Exception:
+            pass
+    return bool(value)
+
+
+def _normalize_failed_check(check):
+    """Normalize one failed-check object into JSON-safe primitives."""
+    if not isinstance(check, dict):
+        return None
+    return {
+        'key': str(check.get('key', '') or ''),
+        'label': str(check.get('label', '') or ''),
+        'passed': _to_native_bool(check.get('passed')),
+        'message': str(check.get('message', '') or ''),
+    }
+
+
+def _normalize_failed_checks(items):
+    """Normalize failed-check list into JSON-safe list."""
+    if not isinstance(items, list):
+        return []
+    normalized = []
+    for item in items:
+        check = _normalize_failed_check(item)
+        if check is not None:
+            normalized.append(check)
+    return normalized
 
 
 # Authentication
@@ -529,7 +630,7 @@ def data_health():
     result = cursor.fetchone()
     pb_records = result[0] if result else 0
 
-    cursor.execute('SELECT COUNT(*) FROM stocks WHERE sector_lv1 IS NOT NULL AND sector_lv1 != ""')
+    cursor.execute('SELECT COUNT(*) FROM stock_meta WHERE sector_lv1 IS NOT NULL AND sector_lv1 != ""')
     result = cursor.fetchone()
     sector_records = result[0] if result else 0
 
@@ -915,7 +1016,9 @@ def five_flags_pools():
         stock_code = request.args.get('stock_code')
         start_date = request.args.get('start_date')
         end_date = request.args.get('end_date')
-        limit = _safe_int_arg('limit', 50, min_value=1, max_value=500)
+        dedupe_stock = _parse_bool_arg('dedupe_stock', False)
+        hit_first = _parse_bool_arg('hit_first', False)
+        limit = _safe_int_arg('limit', 50, min_value=1, max_value=5000)
         offset = _safe_int_arg('offset', 0, min_value=0)
 
         where_parts = []
@@ -943,18 +1046,63 @@ def five_flags_pools():
         conn = get_stock_db_connection()
         cursor = conn.cursor()
 
-        count_sql = f'SELECT COUNT(*) AS total FROM lao_ya_tou_pool {where_sql}'
-        cursor.execute(count_sql, params)
-        total = cursor.fetchone()['total']
+        if dedupe_stock:
+            count_sql = f'SELECT COUNT(DISTINCT stock_code) AS total FROM lao_ya_tou_pool {where_sql}'
+            cursor.execute(count_sql, params)
+            total = cursor.fetchone()['total']
 
-        list_sql = f'''
-            SELECT id, stock_code, stock_name, start_date, end_date, file_name, upload_time, processed
-            FROM lao_ya_tou_pool
-            {where_sql}
-            ORDER BY id DESC
-            LIMIT ? OFFSET ?
-        '''
-        cursor.execute(list_sql, [*params, limit, offset])
+            order_sql = 'ORDER BY has_hits DESC, stock_code ASC' if hit_first else 'ORDER BY stock_code ASC'
+            list_sql = f'''
+                SELECT
+                    p.stock_code,
+                    COALESCE(MAX(NULLIF(p.stock_name, '')), p.stock_code) AS stock_name,
+                    COALESCE(
+                        MAX(
+                            CASE
+                                WHEN NULLIF(TRIM(m.sector_lv1), '') IS NOT NULL
+                                     AND NULLIF(TRIM(m.sector_lv2), '') IS NOT NULL
+                                    THEN NULLIF(TRIM(m.sector_lv1), '') || '/' || NULLIF(TRIM(m.sector_lv2), '')
+                                WHEN NULLIF(TRIM(m.sector_lv1), '') IS NOT NULL
+                                    THEN NULLIF(TRIM(m.sector_lv1), '')
+                                WHEN NULLIF(TRIM(m.sector_lv2), '') IS NOT NULL
+                                    THEN NULLIF(TRIM(m.sector_lv2), '')
+                                ELSE ''
+                            END
+                        ),
+                        ''
+                    ) AS sector_compound,
+                    MIN(p.start_date) AS start_date,
+                    MAX(p.end_date) AS end_date,
+                    SUM(CASE WHEN p.processed = 0 THEN 1 ELSE 0 END) AS unprocessed_count,
+                    CASE
+                        WHEN EXISTS (
+                            SELECT 1
+                            FROM lao_ya_tou_five_flags f
+                            WHERE f.stock_code = p.stock_code
+                        ) THEN 1
+                        ELSE 0
+                    END AS has_hits
+                FROM lao_ya_tou_pool p
+                LEFT JOIN stock_meta m ON m.code = p.stock_code
+                {where_sql}
+                GROUP BY p.stock_code
+                {order_sql}
+                LIMIT ? OFFSET ?
+            '''
+            cursor.execute(list_sql, [*params, limit, offset])
+        else:
+            count_sql = f'SELECT COUNT(*) AS total FROM lao_ya_tou_pool {where_sql}'
+            cursor.execute(count_sql, params)
+            total = cursor.fetchone()['total']
+
+            list_sql = f'''
+                SELECT id, stock_code, stock_name, start_date, end_date, file_name, upload_time, processed
+                FROM lao_ya_tou_pool
+                {where_sql}
+                ORDER BY id DESC
+                LIMIT ? OFFSET ?
+            '''
+            cursor.execute(list_sql, [*params, limit, offset])
         rows = cursor.fetchall()
         conn.close()
 
@@ -966,6 +1114,72 @@ def five_flags_pools():
         })
     except Exception as e:
         return jsonify({'error': f'failed to query five-flags pools: {str(e)}'}), 500
+
+
+@app.route('/api/five-flags/pools/upload', methods=['POST'])
+def five_flags_pool_upload():
+    """Upload LaoYaTou pool file and enqueue serial screening job"""
+    import os
+    import tempfile
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'file is required'}), 400
+
+    upload_file = request.files['file']
+    if not upload_file or not upload_file.filename:
+        return jsonify({'error': 'invalid file'}), 400
+
+    force_overwrite = str(request.form.get('force_overwrite', 'false')).lower() == 'true'
+    snapshot_id = request.form.get('snapshot_id')
+
+    temp_dir = tempfile.mkdtemp(prefix='ff_pool_upload_')
+    temp_path = os.path.join(temp_dir, upload_file.filename)
+    try:
+        upload_file.save(temp_path)
+        upload_result = handle_lao_ya_tou_pool_upload(
+            temp_path,
+            force_overwrite=force_overwrite
+        )
+        if upload_result.get('status') != 'success':
+            return jsonify({
+                'success': False,
+                'error': upload_result.get('message', 'upload failed'),
+                'errors': upload_result.get('errors', [])
+            }), 400
+
+        queue_job = _enqueue_five_flags_job(
+            source='pool_upload',
+            pool_ids=[],
+            max_workers=None,
+            retry_of=None,
+            snapshot_id=snapshot_id
+        )
+        started = _drain_five_flags_queue_once()
+        queue_status = 'queued'
+        run_id = None
+        if started and started.get('job_id') == queue_job.get('job_id'):
+            queue_status = 'accepted'
+            run_id = started.get('run_id')
+
+        return safe_jsonify({
+            'success': True,
+            'upload': upload_result,
+            'queue': {
+                'job_id': queue_job.get('job_id'),
+                'status': queue_status,
+                'run_id': run_id
+            }
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'pool upload failed: {str(e)}'}), 500
+    finally:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            if os.path.exists(temp_dir):
+                os.rmdir(temp_dir)
+        except Exception:
+            pass
 
 
 @app.route('/api/five-flags/unprocessed-summary', methods=['GET'])
@@ -1056,13 +1270,19 @@ def five_flags_results():
         conn = get_stock_db_connection()
         cursor = conn.cursor()
 
+        cursor.execute("PRAGMA table_info(lao_ya_tou_five_flags)")
+        table_columns = {row['name'] for row in cursor.fetchall()}
+        has_snapshot_id = 'snapshot_id' in table_columns
+
         count_sql = f'SELECT COUNT(*) AS total FROM lao_ya_tou_five_flags {where_sql}'
         cursor.execute(count_sql, params)
         total = cursor.fetchone()['total']
 
+        select_snapshot = ', snapshot_id' if has_snapshot_id else ''
+
         list_sql = f'''
             SELECT id, pool_id, screener_id, stock_code, stock_name, screen_date,
-                   close_price, match_reason, extra_data, created_at
+                   close_price, match_reason, extra_data, created_at{select_snapshot}
             FROM lao_ya_tou_five_flags
             {where_sql}
             ORDER BY {order_by}
@@ -1080,6 +1300,8 @@ def five_flags_results():
                     record['extra_data'] = json.loads(record['extra_data'])
                 except Exception:
                     pass
+            if not has_snapshot_id:
+                record['snapshot_id'] = 'legacy'
             items.append(record)
 
         return safe_jsonify({
@@ -1087,7 +1309,7 @@ def five_flags_results():
             'total': total,
             'limit': limit,
             'offset': offset,
-            'dedupe_key': ['stock_code', 'screener_id', 'screen_date']
+            'dedupe_key': ['stock_code', 'screener_id', 'screen_date', 'snapshot_id']
         })
     except Exception as e:
         return jsonify({'error': f'failed to query five-flags results: {str(e)}'}), 500
@@ -1102,6 +1324,14 @@ def five_flags_timeline():
 
     from_date = request.args.get('from')
     to_date = request.args.get('to')
+    include_miss_details = _parse_bool_arg('include_miss_details', False)
+    max_diag_cells = 320
+    max_diag_raw = request.args.get('max_diag_cells')
+    if max_diag_raw:
+        try:
+            max_diag_cells = max(1, min(5000, int(str(max_diag_raw).strip())))
+        except Exception:
+            max_diag_cells = 320
 
     try:
         conn = get_stock_db_connection()
@@ -1119,7 +1349,7 @@ def five_flags_timeline():
         where_sql = ' AND '.join(where_parts)
         cursor.execute(
             f'''
-            SELECT screen_date, screener_id, match_reason, close_price, pool_id, created_at
+            SELECT screen_date, screener_id, match_reason, close_price, pool_id, created_at, extra_data
             FROM lao_ya_tou_five_flags
             WHERE {where_sql}
             ORDER BY screen_date ASC, screener_id ASC
@@ -1127,30 +1357,273 @@ def five_flags_timeline():
             params
         )
         rows = cursor.fetchall()
+        hit_dates = sorted({row['screen_date'] for row in rows})
+
+        selected_dates = []
+        if from_date and to_date and from_date <= to_date:
+            cursor.execute(
+                '''
+                SELECT DISTINCT trade_date
+                FROM daily_prices
+                WHERE code = ? AND trade_date >= ? AND trade_date <= ?
+                ORDER BY trade_date ASC
+                ''',
+                (stock_code, from_date, to_date)
+            )
+            selected_dates = [r['trade_date'] for r in cursor.fetchall()]
+            if not selected_dates:
+                selected_dates = list(_iter_dates(from_date, to_date))
+        elif hit_dates:
+            selected_dates = hit_dates
+        else:
+            selected_dates = []
+
+        cursor.execute('SELECT name FROM stocks WHERE code = ? LIMIT 1', (stock_code,))
+        stock_row = cursor.fetchone()
+        stock_name = stock_row['name'] if stock_row and stock_row['name'] else stock_code
+
+        daily_quote_map = {}
+        if selected_dates:
+            quote_where_parts = ['code = ?']
+            quote_params = [stock_code]
+            if from_date:
+                quote_where_parts.append('trade_date >= ?')
+                quote_params.append(from_date)
+            if to_date:
+                quote_where_parts.append('trade_date <= ?')
+                quote_params.append(to_date)
+            quote_where_sql = ' AND '.join(quote_where_parts)
+            cursor.execute(
+                f'''
+                SELECT trade_date, open, high, low, close, pct_change, volume, amount, turnover
+                FROM daily_prices
+                WHERE {quote_where_sql}
+                ORDER BY trade_date ASC
+                ''',
+                quote_params
+            )
+            for quote in cursor.fetchall():
+                daily_quote_map[quote['trade_date']] = {
+                    'trade_date': quote['trade_date'],
+                    'open': quote['open'],
+                    'high': quote['high'],
+                    'low': quote['low'],
+                    'close': quote['close'],
+                    'pct_change': quote['pct_change'],
+                    'volume': quote['volume'],
+                    'amount': quote['amount'],
+                    'turnover': quote['turnover'],
+                }
         conn.close()
 
+        def _empty_items():
+            return [
+                {
+                    'screener_id': screener['screener_id'],
+                    'label': screener['label'],
+                    'hit': False,
+                    'reason_hit': '',
+                    'reason_miss': f"当日未满足「{screener['label']}」条件。",
+                    'failed_checks': [],
+                    'first_failed_check': None,
+                }
+                for screener in FIVE_FLAGS_TIMELINE_SCREENERS
+            ]
+
         timeline_map = {}
+        for d in selected_dates:
+            timeline_map[d] = {
+                'date': d,
+                'hits': [],
+                'details': [],
+                'items': _empty_items(),
+            }
+
         for row in rows:
             d = row['screen_date']
             if d not in timeline_map:
                 timeline_map[d] = {
                     'date': d,
                     'hits': [],
-                    'details': []
+                    'details': [],
+                    'items': _empty_items(),
                 }
+
+            resolved_id = _resolve_five_flags_screener_id(row['screener_id'])
+            extra_data = row['extra_data']
+            if isinstance(extra_data, str):
+                try:
+                    extra_data = json.loads(extra_data)
+                except Exception:
+                    extra_data = {}
+            elif not isinstance(extra_data, dict):
+                extra_data = {}
+
             timeline_map[d]['hits'].append(row['screener_id'])
             timeline_map[d]['details'].append({
                 'screener_id': row['screener_id'],
                 'match_reason': row['match_reason'],
+                'reason_hit': row['match_reason'] or '',
+                'reason_miss': '',
+                'failed_checks': _normalize_failed_checks(extra_data.get('failed_checks')),
+                'first_failed_check': _normalize_failed_check(extra_data.get('first_failed_check')),
                 'close_price': row['close_price'],
                 'pool_id': row['pool_id'],
                 'created_at': row['created_at']
             })
 
+            if not resolved_id:
+                continue
+            for item in timeline_map[d]['items']:
+                if item['screener_id'] != resolved_id:
+                    continue
+                item['hit'] = True
+                item['reason_hit'] = row['match_reason'] or ''
+                item['reason_miss'] = ''
+                break
+
+        if include_miss_details and selected_dates:
+            total_cells = len(selected_dates) * len(FIVE_FLAGS_TIMELINE_SCREENERS)
+            if total_cells <= max_diag_cells:
+                from scripts.pool_screener_adapter import ScreenerAdapter
+
+                adapter = ScreenerAdapter(db_path=str(DASHBOARD_DIR.parent / 'data' / 'stock_data.db'))
+                for date_str in selected_dates:
+                    one_day = timeline_map.get(date_str)
+                    if not one_day:
+                        continue
+                    for item in one_day['items']:
+                        if item.get('hit'):
+                            continue
+                        miss_result = adapter.check_stock(
+                            screener_id=item['screener_id'],
+                            stock_code=stock_code,
+                            stock_name=stock_name,
+                            date=date_str,
+                            include_miss_details=True
+                        )
+                        if not isinstance(miss_result, dict):
+                            continue
+                        if _to_native_bool(miss_result.get('matched')):
+                            item['hit'] = True
+                            item['reason_hit'] = miss_result.get('reason', '')
+                            item['reason_miss'] = ''
+                            one_day['hits'].append(item['screener_id'])
+                            one_day['details'].append({
+                                'screener_id': item['screener_id'],
+                                'match_reason': miss_result.get('reason', ''),
+                                'reason_hit': miss_result.get('reason', ''),
+                                'reason_miss': '',
+                                'failed_checks': [],
+                                'first_failed_check': None,
+                                'close_price': miss_result.get('price'),
+                                'pool_id': None,
+                                'created_at': None,
+                            })
+                            continue
+                        item['reason_miss'] = miss_result.get('reason_miss') or item['reason_miss']
+                        item['failed_checks'] = _normalize_failed_checks(miss_result.get('failed_checks'))
+                        item['first_failed_check'] = _normalize_failed_check(miss_result.get('first_failed_check'))
+
         timeline = [timeline_map[k] for k in sorted(timeline_map.keys())]
-        return safe_jsonify({'stock_code': stock_code, 'timeline': timeline})
+        return safe_jsonify({
+            'stock_code': stock_code,
+            'stock_name': stock_name,
+            'diag_meta': {
+                'include_miss_details': include_miss_details,
+                'max_diag_cells': max_diag_cells,
+                'diagnostics_applied': bool(include_miss_details and selected_dates and (len(selected_dates) * len(FIVE_FLAGS_TIMELINE_SCREENERS) <= max_diag_cells))
+            },
+            'screeners': [
+                {'screener_id': item['screener_id'], 'label': item['label']}
+                for item in FIVE_FLAGS_TIMELINE_SCREENERS
+            ],
+            'timeline': timeline,
+            'daily_quotes': [daily_quote_map[d] for d in selected_dates if d in daily_quote_map]
+        })
     except Exception as e:
         return jsonify({'error': f'failed to query timeline: {str(e)}'}), 500
+
+
+@app.route('/api/five-flags/diagnose-cell', methods=['GET'])
+def five_flags_diagnose_cell():
+    """Diagnose one stock-date-screener cell for miss details fallback."""
+    stock_code = (request.args.get('stock_code') or '').strip()
+    screen_date = (request.args.get('date') or '').strip()
+    screener_id = (request.args.get('screener_id') or '').strip()
+    stock_name = (request.args.get('stock_name') or '').strip()
+
+    if not stock_code or not screen_date or not screener_id:
+        return jsonify({'error': 'stock_code, date, screener_id are required'}), 400
+
+    resolved_id = _resolve_five_flags_screener_id(screener_id)
+    if not resolved_id:
+        return jsonify({'error': f'invalid screener_id: {screener_id}'}), 400
+
+    try:
+        conn = get_stock_db_connection()
+        cursor = conn.cursor()
+
+        if not stock_name:
+            cursor.execute('SELECT name FROM stocks WHERE code = ? LIMIT 1', (stock_code,))
+            row = cursor.fetchone()
+            if row and row['name']:
+                stock_name = row['name']
+            else:
+                stock_name = stock_code
+
+        cursor.execute(
+            '''
+            SELECT trade_date, open, high, low, close, pct_change, volume, amount, turnover
+            FROM daily_prices
+            WHERE code = ? AND trade_date = ?
+            LIMIT 1
+            ''',
+            (stock_code, screen_date)
+        )
+        quote_row = cursor.fetchone()
+        conn.close()
+
+        daily_quote = dict(quote_row) if quote_row else None
+
+        from scripts.pool_screener_adapter import ScreenerAdapter
+        adapter = ScreenerAdapter(db_path=str(DASHBOARD_DIR.parent / 'data' / 'stock_data.db'))
+        result = adapter.check_stock(
+            screener_id=resolved_id,
+            stock_code=stock_code,
+            stock_name=stock_name,
+            date=screen_date,
+            include_miss_details=True
+        )
+
+        if not isinstance(result, dict):
+            return safe_jsonify({
+                'stock_code': stock_code,
+                'stock_name': stock_name,
+                'date': screen_date,
+                'screener_id': resolved_id,
+                'matched': False,
+                'reason_miss': f"当日未满足「{resolved_id}」条件。",
+                'failed_checks': [],
+                'first_failed_check': None,
+                'daily_quote': daily_quote,
+            })
+
+        return safe_jsonify({
+            'stock_code': stock_code,
+            'stock_name': stock_name,
+            'date': screen_date,
+            'screener_id': resolved_id,
+            'matched': _to_native_bool(result.get('matched')),
+            'reason_hit': result.get('reason') or '',
+            'reason_miss': result.get('reason_miss') or '',
+            'failed_checks': _normalize_failed_checks(result.get('failed_checks')),
+            'first_failed_check': _normalize_failed_check(result.get('first_failed_check')),
+            'daily_quote': daily_quote,
+            'price': result.get('price'),
+        })
+    except Exception as e:
+        return jsonify({'error': f'failed to diagnose cell: {str(e)}'}), 500
 
 
 def _load_five_flags_progress():
@@ -1196,6 +1669,493 @@ def _save_five_flags_runs_registry(runs):
         json.dump(runs, f, ensure_ascii=False, indent=2)
 
 
+FIVE_FLAGS_QUEUE_LOCK = threading.Lock()
+FIVE_FLAGS_QUEUE_WORKER_STARTED = False
+FIVE_FLAGS_DAILY_SCHEDULER_STARTED = False
+VALID_MARKET_PHASES = {'WAVE_1', 'WAVE_2', 'WAVE_3', 'WAVE_4', 'WAVE_5', 'WAVE_A', 'WAVE_B', 'WAVE_C'}
+VALID_PROFILE_SLOTS = {'active', 'candidate'}
+FIVE_FLAGS_DAILY_TRIGGER_HOUR = int(os.environ.get('FIVE_FLAGS_DAILY_TRIGGER_HOUR', '17'))
+FIVE_FLAGS_DAILY_TRIGGER_MINUTE = int(os.environ.get('FIVE_FLAGS_DAILY_TRIGGER_MINUTE', '0'))
+FIVE_FLAGS_DAILY_ENABLED = os.environ.get('FIVE_FLAGS_DAILY_ENABLED', '1') == '1'
+FIVE_FLAGS_EMAIL_TO = os.environ.get('FIVE_FLAGS_EMAIL_TO', '')
+SMTP_HOST = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
+SMTP_PORT = int(os.environ.get('SMTP_PORT', '465'))
+SMTP_USER = os.environ.get('SMTP_USER', '')
+SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD', '')
+
+
+def _five_flags_queue_path():
+    """Queue file path for serial five-flags scheduling"""
+    return DASHBOARD_DIR.parent / 'data' / 'five_flags_queue.json'
+
+
+def _five_flags_daily_scheduler_state_path():
+    return DASHBOARD_DIR.parent / 'data' / 'five_flags_daily_scheduler_state.json'
+
+
+def _five_flags_default_phase_profile_path():
+    return DASHBOARD_DIR.parent / 'config' / 'screeners' / 'market_phase_profiles.json'
+
+
+def _resolve_phase_profile_path(path_str=None):
+    if not path_str:
+        return _five_flags_default_phase_profile_path()
+    candidate = Path(str(path_str))
+    if candidate.is_absolute():
+        return candidate
+    return DASHBOARD_DIR.parent / candidate
+
+
+def _normalize_market_phase(value):
+    if value is None:
+        return None
+    phase = str(value).strip().upper()
+    if not phase:
+        return None
+    if phase not in VALID_MARKET_PHASES:
+        raise ValueError(f'invalid market_phase: {phase}')
+    return phase
+
+
+def _normalize_profile_slot(value, default='active'):
+    slot = str(value or default).strip().lower()
+    if slot not in VALID_PROFILE_SLOTS:
+        raise ValueError(f'invalid profile_slot: {slot}')
+    return slot
+
+
+def _load_phase_profile_doc(path):
+    if not path.exists():
+        return {'metadata': {}, 'profiles': {'default': {'active': {}, 'candidate': {}}}}
+    with open(path, 'r', encoding='utf-8') as f:
+        loaded = json.load(f)
+    return _normalize_phase_profile_doc(loaded if isinstance(loaded, dict) else {})
+
+
+def _normalize_phase_profile_doc(loaded):
+    # Backward compatibility with old format: {"default": {...}, "WAVE_1": {...}}
+    if 'profiles' in loaded and isinstance(loaded.get('profiles'), dict):
+        doc = loaded
+    else:
+        profiles = {}
+        for key, value in loaded.items():
+            if not isinstance(value, dict):
+                continue
+            phase_key = str(key).strip().upper()
+            if phase_key == 'DEFAULT':
+                phase_key = 'default'
+            profiles[phase_key] = {'active': value, 'candidate': {}}
+        doc = {'metadata': {}, 'profiles': profiles}
+
+    metadata = doc.get('metadata') if isinstance(doc.get('metadata'), dict) else {}
+    profiles = doc.get('profiles') if isinstance(doc.get('profiles'), dict) else {}
+    final_profiles = {}
+    for key, value in profiles.items():
+        phase_key = str(key).strip().upper()
+        if phase_key == 'DEFAULT':
+            phase_key = 'default'
+        if phase_key != 'default' and phase_key not in VALID_MARKET_PHASES:
+            continue
+        entry = value if isinstance(value, dict) else {}
+        active = entry.get('active') if isinstance(entry.get('active'), dict) else {}
+        candidate = entry.get('candidate') if isinstance(entry.get('candidate'), dict) else {}
+        final_profiles[phase_key] = {'active': active, 'candidate': candidate}
+    if 'default' not in final_profiles:
+        final_profiles['default'] = {'active': {}, 'candidate': {}}
+    return {'metadata': metadata, 'profiles': final_profiles}
+
+
+def _save_phase_profile_doc(path, doc):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    normalized = _normalize_phase_profile_doc(doc if isinstance(doc, dict) else {})
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(normalized, f, ensure_ascii=False, indent=2)
+
+
+def _load_daily_scheduler_state():
+    path = _five_flags_daily_scheduler_state_path()
+    if not path.exists():
+        return {}
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_daily_scheduler_state(state):
+    path = _five_flags_daily_scheduler_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(state if isinstance(state, dict) else {}, f, ensure_ascii=False, indent=2)
+
+
+def _check_five_flags_unprocessed_data_readiness():
+    """
+    Readiness guard for auto/manual default run:
+    1) must have unprocessed pools
+    2) unprocessed pools must have price data in [start_date, end_date]
+    """
+    conn = get_stock_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute('SELECT COUNT(*) AS cnt FROM lao_ya_tou_pool WHERE processed = 0')
+        unprocessed_row = cursor.fetchone()
+        unprocessed_count = int(unprocessed_row['cnt']) if unprocessed_row and 'cnt' in unprocessed_row.keys() else 0
+
+        if unprocessed_count <= 0:
+            return {
+                'ready': False,
+                'reason': 'no_unprocessed_pools',
+                'unprocessed_count': 0,
+                'processable_count': 0
+            }
+
+        cursor.execute('''
+            SELECT COUNT(*) AS cnt
+            FROM (
+                SELECT p.id
+                FROM lao_ya_tou_pool p
+                WHERE p.processed = 0
+                  AND EXISTS (
+                      SELECT 1
+                      FROM daily_prices d
+                      WHERE d.code = p.stock_code
+                        AND d.trade_date >= p.start_date
+                        AND d.trade_date <= p.end_date
+                  )
+            ) t
+        ''')
+        processable_row = cursor.fetchone()
+        processable_count = int(processable_row['cnt']) if processable_row and 'cnt' in processable_row.keys() else 0
+
+        if processable_count <= 0:
+            return {
+                'ready': False,
+                'reason': 'no_price_data_for_unprocessed_pools',
+                'unprocessed_count': unprocessed_count,
+                'processable_count': 0
+            }
+
+        return {
+            'ready': True,
+            'reason': 'ready',
+            'unprocessed_count': unprocessed_count,
+            'processable_count': processable_count
+        }
+    finally:
+        conn.close()
+
+
+def _send_email(subject, body):
+    if not SMTP_USER or not SMTP_PASSWORD:
+        return False, 'smtp credentials not configured'
+    if not FIVE_FLAGS_EMAIL_TO:
+        return False, 'email recipient not configured'
+    try:
+        msg = EmailMessage()
+        msg['Subject'] = subject
+        msg['From'] = SMTP_USER
+        msg['To'] = FIVE_FLAGS_EMAIL_TO
+        msg.set_content(body)
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ssl.create_default_context()) as server:
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.send_message(msg)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def _notify_daily_run_started(job_id, run_id):
+    now_text = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    subject = f'[NeoTrade] Five Flags 日报任务已启动 {now_text}'
+    body = (
+        'Five Flags 每日任务已启动。\n\n'
+        f'- 时间: {now_text}\n'
+        f'- job_id: {job_id}\n'
+        f'- run_id: {run_id}\n'
+        '- 触发方式: daily_auto (17:00)\n'
+    )
+    return _send_email(subject, body)
+
+
+def _notify_daily_run_finished(run):
+    now_text = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    status = run.get('status') or 'unknown'
+    subject = f'[NeoTrade] Five Flags 日报任务结果 {status.upper()} {now_text}'
+    by_screener = run.get('by_screener') or {}
+    screener_lines = '\n'.join([f"  - {k}: {v}" for k, v in by_screener.items()]) or '  - 无'
+    body = (
+        'Five Flags 每日任务简报\n\n'
+        f'- 时间: {now_text}\n'
+        f"- run_id: {run.get('run_id')}\n"
+        f'- 状态: {status}\n'
+        f"- 总股票数: {run.get('total_stocks', 0)}\n"
+        f"- 已处理: {run.get('processed_stocks', 0)}\n"
+        f"- 失败数: {run.get('failed_stocks', 0)}\n"
+        f"- 总命中数: {run.get('total_matches', 0)}\n"
+        f"- 市场阶段: {run.get('market_phase') or 'default'}\n"
+        f"- 参数槽位: {run.get('profile_slot') or 'active'}\n"
+        f"- 参数版本: {run.get('profile_version') or 'N/A'}\n\n"
+        '按筛选器命中:\n'
+        f'{screener_lines}\n'
+    )
+    return _send_email(subject, body)
+
+
+def _load_five_flags_queue():
+    path = _five_flags_queue_path()
+    if not path.exists():
+        return []
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return []
+
+
+def _save_five_flags_queue(items):
+    path = _five_flags_queue_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(items, f, ensure_ascii=False, indent=2)
+
+
+def _refresh_five_flags_queue_status(lock_held: bool = False):
+    """
+    Sync queue item status by associated run status.
+    started -> completed/failed when run registry is finalized.
+    """
+    def _do_refresh():
+        queue_items = _load_five_flags_queue()
+        if not queue_items:
+            return queue_items
+
+        runs = _refresh_five_flags_run_registry(_load_five_flags_runs_registry())
+        run_by_id = {r.get('run_id'): r for r in runs}
+        changed = False
+        now_ts = datetime.now().isoformat()
+        pending_finish_notifications = []
+
+        for item in queue_items:
+            if item.get('status') != 'started':
+                continue
+            run_id = item.get('run_id')
+            if not run_id:
+                continue
+            run = run_by_id.get(run_id)
+            if not run:
+                continue
+            run_status = run.get('status')
+            # Sync flow runtime fields for better queue observability.
+            for key in (
+                'flow_id', 'flow_plan_type', 'total_levels', 'current_level',
+                'level_duration_ms', 'market_phase', 'phase_param_profile',
+                'profile_slot', 'profile_version', 'calibration_note'
+            ):
+                if key in run and item.get(key) != run.get(key):
+                    item[key] = run.get(key)
+                    changed = True
+
+            if run_status in ('completed', 'failed'):
+                item['status'] = run_status
+                item['completed_at'] = run.get('completed_at') or now_ts
+                if run_status == 'failed':
+                    item['error'] = item.get('error') or 'run failed'
+                if item.get('source') == 'daily_auto' and not item.get('finish_email_sent_at'):
+                    pending_finish_notifications.append((item, run))
+                changed = True
+
+        for item, run in pending_finish_notifications:
+            sent_ok, sent_error = _notify_daily_run_finished(run)
+            item['finish_email_sent_at'] = datetime.now().isoformat()
+            item['finish_email_status'] = 'sent' if sent_ok else 'failed'
+            item['finish_email_error'] = sent_error
+            changed = True
+
+        if changed:
+            _save_five_flags_queue(queue_items)
+        return queue_items
+
+    if lock_held:
+        return _do_refresh()
+    with FIVE_FLAGS_QUEUE_LOCK:
+        return _do_refresh()
+
+
+def _has_active_five_flags_run():
+    runs = _refresh_five_flags_run_registry(_load_five_flags_runs_registry())
+    active = next((r for r in runs if r.get('status') in ('running', 'accepted')), None)
+    if not active:
+        return False, None
+    if _is_pid_running(active.get('pid')):
+        return True, active
+    return False, None
+
+
+def _enqueue_five_flags_job(source: str, pool_ids=None, max_workers=None, retry_of=None,
+                            snapshot_id=None, flow_config=None, market_phase=None,
+                            phase_profile=None, profile_slot='active', calibration_note=None):
+    now = datetime.now().isoformat()
+    job = {
+        'job_id': f'ffq_{datetime.now().strftime("%Y%m%d_%H%M%S")}_{uuid.uuid4().hex[:8]}',
+        'status': 'queued',
+        'source': source,
+        'requested_at': now,
+        'started_at': None,
+        'run_id': None,
+        'pool_ids': pool_ids or [],
+        'max_workers': max_workers,
+        'retry_of': retry_of,
+        'snapshot_id': snapshot_id,
+        'flow_config': flow_config,
+        'market_phase': market_phase,
+        'phase_profile': phase_profile,
+        'profile_slot': profile_slot,
+        'calibration_note': calibration_note,
+        'error': None
+    }
+    with FIVE_FLAGS_QUEUE_LOCK:
+        queue_items = _load_five_flags_queue()
+        queue_items.append(job)
+        _save_five_flags_queue(queue_items)
+    return job
+
+
+def _drain_five_flags_queue_once():
+    with FIVE_FLAGS_QUEUE_LOCK:
+        queue_items = _refresh_five_flags_queue_status(lock_held=True)
+        pending = [x for x in queue_items if x.get('status') == 'queued']
+        if not pending:
+            return None
+
+        has_active, _ = _has_active_five_flags_run()
+        if has_active:
+            return None
+
+        target_job = pending[0]
+        target_job_id = target_job.get('job_id')
+
+        try:
+            start_result = _start_five_flags_run(
+                pool_ids=target_job.get('pool_ids') or [],
+                max_workers=target_job.get('max_workers'),
+                dry_run=False,
+                retry_of=target_job.get('retry_of'),
+                snapshot_id=target_job.get('snapshot_id'),
+                flow_config=target_job.get('flow_config'),
+                market_phase=target_job.get('market_phase'),
+                phase_profile=target_job.get('phase_profile'),
+                profile_slot=target_job.get('profile_slot') or 'active',
+                calibration_note=target_job.get('calibration_note')
+            )
+            for item in queue_items:
+                if item.get('job_id') == target_job_id:
+                    item['status'] = 'started'
+                    item['started_at'] = datetime.now().isoformat()
+                    item['run_id'] = start_result.get('run_id')
+                    if item.get('source') == 'daily_auto' and not item.get('start_email_sent_at'):
+                        sent_ok, sent_error = _notify_daily_run_started(
+                            target_job_id,
+                            start_result.get('run_id')
+                        )
+                        item['start_email_sent_at'] = datetime.now().isoformat()
+                        item['start_email_status'] = 'sent' if sent_ok else 'failed'
+                        item['start_email_error'] = sent_error
+            _save_five_flags_queue(queue_items)
+            return {'job_id': target_job_id, **start_result}
+        except Exception as e:
+            for item in queue_items:
+                if item.get('job_id') == target_job_id:
+                    item['status'] = 'failed'
+                    item['error'] = str(e)
+            _save_five_flags_queue(queue_items)
+            raise
+
+
+def _start_five_flags_queue_worker():
+    global FIVE_FLAGS_QUEUE_WORKER_STARTED
+    if FIVE_FLAGS_QUEUE_WORKER_STARTED:
+        return
+
+    def _worker_loop():
+        while True:
+            try:
+                _drain_five_flags_queue_once()
+            except Exception:
+                pass
+            time.sleep(5)
+
+    t = threading.Thread(target=_worker_loop, name='five_flags_queue_worker', daemon=True)
+    t.start()
+    FIVE_FLAGS_QUEUE_WORKER_STARTED = True
+
+
+def _should_trigger_daily_run(now_dt):
+    if not FIVE_FLAGS_DAILY_ENABLED:
+        return False
+    if now_dt.hour < FIVE_FLAGS_DAILY_TRIGGER_HOUR:
+        return False
+    if now_dt.hour == FIVE_FLAGS_DAILY_TRIGGER_HOUR and now_dt.minute < FIVE_FLAGS_DAILY_TRIGGER_MINUTE:
+        return False
+    state = _load_daily_scheduler_state()
+    return state.get('last_trigger_date') != now_dt.date().isoformat()
+
+
+def _start_five_flags_daily_scheduler():
+    global FIVE_FLAGS_DAILY_SCHEDULER_STARTED
+    if FIVE_FLAGS_DAILY_SCHEDULER_STARTED:
+        return
+
+    def _scheduler_loop():
+        while True:
+            try:
+                now_dt = datetime.now()
+                if _should_trigger_daily_run(now_dt):
+                    with FIVE_FLAGS_QUEUE_LOCK:
+                        queue_items = _load_five_flags_queue()
+                        has_today_daily = any(
+                            (x.get('source') == 'daily_auto') and
+                            ((x.get('requested_at') or '')[:10] == now_dt.date().isoformat())
+                            for x in queue_items
+                        )
+                    if not has_today_daily:
+                        readiness = _check_five_flags_unprocessed_data_readiness()
+                        state = _load_daily_scheduler_state()
+                        state['last_checked_at'] = now_dt.isoformat()
+                        state['last_guard'] = readiness
+                        if readiness.get('ready'):
+                            _enqueue_five_flags_job(
+                                source='daily_auto',
+                                pool_ids=[],
+                                max_workers=None,
+                                retry_of=None,
+                                snapshot_id=None,
+                                flow_config=None,
+                                market_phase=None,
+                                phase_profile=None,
+                                profile_slot='active',
+                                calibration_note='daily_auto_17:00'
+                            )
+                            _drain_five_flags_queue_once()
+                            state['last_trigger_date'] = now_dt.date().isoformat()
+                        elif readiness.get('reason') == 'no_unprocessed_pools':
+                            # No work today: mark as checked to avoid repeated polling.
+                            state['last_trigger_date'] = now_dt.date().isoformat()
+                        _save_daily_scheduler_state(state)
+            except Exception:
+                pass
+            time.sleep(30)
+
+    t = threading.Thread(target=_scheduler_loop, name='five_flags_daily_scheduler', daemon=True)
+    t.start()
+    FIVE_FLAGS_DAILY_SCHEDULER_STARTED = True
+
+
 def _is_pid_running(pid):
     """Check whether a process id exists"""
     if not pid:
@@ -1220,8 +2180,29 @@ def _refresh_five_flags_run_registry(runs):
     """Refresh status from process existence (read-only check)"""
     changed = False
     now_ts = datetime.now().isoformat()
+    progress = _load_five_flags_progress() or {}
+    flow_runtime = {
+        'flow_id': progress.get('flow_id'),
+        'flow_plan_type': progress.get('flow_plan_type'),
+        'total_levels': progress.get('total_levels'),
+        'current_level': progress.get('current_level'),
+        'level_duration_ms': progress.get('level_duration_ms'),
+        'market_phase': progress.get('market_phase'),
+        'phase_param_profile': progress.get('phase_param_profile'),
+        'profile_slot': progress.get('profile_slot'),
+        'profile_version': progress.get('profile_version'),
+        'calibration_note': progress.get('calibration_note')
+    }
+
     for run in runs:
         status = run.get('status')
+        # Only sync runtime flow fields to active runs to avoid rewriting history.
+        if flow_runtime.get('flow_id') and status in ('running', 'accepted'):
+            for key, value in flow_runtime.items():
+                if run.get(key) != value:
+                    run[key] = value
+                    changed = True
+
         if status in ('running', 'accepted'):
             pid = run.get('pid')
             if pid and _is_pid_running(pid):
@@ -1249,7 +2230,105 @@ def _refresh_five_flags_run_registry(runs):
     return runs
 
 
-def _start_five_flags_run(pool_ids=None, max_workers=None, dry_run=False, retry_of=None, snapshot_id=None):
+def _build_level_timing_summary(runs, limit_runs=20, flow_id=None, spike_threshold=1.8):
+    """Aggregate level timing from recent runs for one flow."""
+    sorted_runs = sorted(runs, key=lambda r: r.get('requested_at') or '', reverse=True)
+    selected_flow_id = flow_id
+    selected_plan_type = None
+    selected_total_levels = None
+    sampled = []
+
+    for run in sorted_runs:
+        if run.get('dry_run'):
+            continue
+        level_map = run.get('level_duration_ms')
+        if not isinstance(level_map, dict) or not level_map:
+            continue
+        run_flow_id = run.get('flow_id')
+        if selected_flow_id and run_flow_id != selected_flow_id:
+            continue
+        if selected_flow_id is None:
+            selected_flow_id = run_flow_id
+            selected_plan_type = run.get('flow_plan_type')
+            selected_total_levels = run.get('total_levels')
+        if run.get('flow_plan_type') != selected_plan_type:
+            continue
+        if run.get('total_levels') != selected_total_levels:
+            continue
+        sampled.append(run)
+        if len(sampled) >= limit_runs:
+            break
+
+    if not sampled:
+        return {
+            'flow_id': selected_flow_id,
+            'flow_plan_type': selected_plan_type,
+            'total_levels': selected_total_levels,
+            'runs_count': 0,
+            'spike_threshold': spike_threshold,
+            'levels': [],
+            'slowest_level': None,
+            'spike_alert_levels': [],
+            'sampled_run_ids': []
+        }
+
+    bucket = {}
+    for run in sampled:
+        for level_key, value in (run.get('level_duration_ms') or {}).items():
+            try:
+                level = int(level_key)
+                duration_ms = float(value)
+            except (TypeError, ValueError):
+                continue
+            if level not in bucket:
+                bucket[level] = []
+            bucket[level].append(duration_ms)
+
+    levels = []
+    for level in sorted(bucket.keys()):
+        values = bucket[level]
+        avg_ms = round(sum(values) / len(values), 2)
+        min_ms = round(min(values), 2)
+        max_ms = round(max(values), 2)
+        spike_ratio = round((max_ms / avg_ms), 2) if avg_ms > 0 else 0.0
+        levels.append({
+            'level': level,
+            'avg_ms': avg_ms,
+            'min_ms': min_ms,
+            'max_ms': max_ms,
+            'samples': len(values),
+            'spike_ratio': spike_ratio,
+            'spike_alert': spike_ratio >= spike_threshold and len(values) >= 3
+        })
+
+    slowest_level = None
+    if levels:
+        slowest = max(levels, key=lambda x: x.get('avg_ms', 0))
+        slowest_level = {
+            'level': slowest['level'],
+            'avg_ms': slowest['avg_ms'],
+            'percent_of_total_avg': round(
+                (slowest['avg_ms'] / sum(x.get('avg_ms', 0) for x in levels)) * 100, 2
+            ) if sum(x.get('avg_ms', 0) for x in levels) > 0 else 0.0
+        }
+
+    return {
+        'flow_id': selected_flow_id,
+        'flow_plan_type': selected_plan_type,
+        'total_levels': selected_total_levels,
+        'runs_count': len(sampled),
+        'spike_threshold': spike_threshold,
+        'levels': levels,
+        'slowest_level': slowest_level,
+        'spike_alert_levels': [x['level'] for x in levels if x.get('spike_alert')],
+        'sampled_run_ids': [r.get('run_id') for r in sampled]
+    }
+
+
+def _start_five_flags_run(pool_ids=None, max_workers=None, dry_run=False,
+                          retry_of=None, snapshot_id=None, flow_config=None,
+                          market_phase=None, phase_profile=None, profile_slot='active',
+                          calibration_note=None):
     """
     Start five-flags screening subprocess in controlled async mode.
     Returns dict payload for API response.
@@ -1268,6 +2347,11 @@ def _start_five_flags_run(pool_ids=None, max_workers=None, dry_run=False, retry_
             'status': 'dry_run',
             'queued_pools': len(pool_ids or []),
             'snapshot_id': snapshot_id,
+            'flow_config': flow_config,
+            'market_phase': market_phase,
+            'phase_profile': phase_profile,
+            'profile_slot': profile_slot,
+            'calibration_note': calibration_note,
             'dry_run': True
         }
 
@@ -1276,6 +2360,16 @@ def _start_five_flags_run(pool_ids=None, max_workers=None, dry_run=False, retry_
         cmd.extend(['--max-workers', str(max_workers)])
     if pool_ids:
         cmd.extend(['--pool-ids', ','.join(str(x) for x in pool_ids)])
+    if flow_config:
+        cmd.extend(['--flow-config', str(flow_config)])
+    if market_phase:
+        cmd.extend(['--market-phase', str(market_phase)])
+    if phase_profile:
+        cmd.extend(['--phase-profile', str(phase_profile)])
+    if profile_slot:
+        cmd.extend(['--profile-slot', str(profile_slot)])
+    if calibration_note:
+        cmd.extend(['--calibration-note', str(calibration_note)])
 
     logs_dir = project_root / 'logs'
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -1302,6 +2396,11 @@ def _start_five_flags_run(pool_ids=None, max_workers=None, dry_run=False, retry_
         'pool_ids': pool_ids or [],
         'max_workers': max_workers,
         'retry_of': retry_of,
+        'flow_config': flow_config,
+        'market_phase': market_phase,
+        'phase_profile': phase_profile,
+        'profile_slot': profile_slot,
+        'calibration_note': calibration_note,
         'dry_run': False,
         'log_file': str(log_file),
         'command': cmd
@@ -1314,6 +2413,11 @@ def _start_five_flags_run(pool_ids=None, max_workers=None, dry_run=False, retry_
         'status': 'accepted',
         'queued_pools': len(pool_ids or []),
         'pid': proc.pid,
+        'flow_config': flow_config,
+        'market_phase': market_phase,
+        'phase_profile': phase_profile,
+        'profile_slot': profile_slot,
+        'calibration_note': calibration_note,
         'dry_run': False
     }
 
@@ -1330,6 +2434,16 @@ def _build_five_flags_run_view(run_id: str = 'latest'):
     statistics = progress.get('statistics') or {}
     total_matches = int(statistics.get('total_matches') or 0)
     by_screener = statistics.get('by_screener') or {}
+    flow_id = progress.get('flow_id')
+    flow_plan_type = progress.get('flow_plan_type')
+    total_levels = progress.get('total_levels')
+    current_level = progress.get('current_level')
+    level_duration_ms = progress.get('level_duration_ms') or {}
+    market_phase = progress.get('market_phase')
+    phase_param_profile = progress.get('phase_param_profile') or {}
+    profile_slot = progress.get('profile_slot')
+    profile_version = progress.get('profile_version')
+    calibration_note = progress.get('calibration_note')
 
     # Fallback to database if progress file is missing or empty
     conn = get_stock_db_connection()
@@ -1381,6 +2495,16 @@ def _build_five_flags_run_view(run_id: str = 'latest'):
         'failed_stocks': failed_stocks,
         'total_matches': total_matches,
         'by_screener': by_screener,
+        'flow_id': flow_id,
+        'flow_plan_type': flow_plan_type,
+        'total_levels': total_levels,
+        'current_level': current_level,
+        'level_duration_ms': level_duration_ms,
+        'market_phase': market_phase,
+        'phase_param_profile': phase_param_profile,
+        'profile_slot': profile_slot,
+        'profile_version': profile_version,
+        'calibration_note': calibration_note,
         'source': 'progress_file+db_aggregate'
     }
     run['progress'] = {
@@ -1395,6 +2519,7 @@ def _build_five_flags_run_view(run_id: str = 'latest'):
 def five_flags_runs():
     """List five-flags runs"""
     try:
+        _drain_five_flags_queue_once()
         limit = _safe_int_arg('limit', 20, min_value=1, max_value=100)
         offset = _safe_int_arg('offset', 0, min_value=0)
         status_filter = (request.args.get('status') or '').strip().lower()
@@ -1423,6 +2548,7 @@ def five_flags_runs():
 def five_flags_run_detail(run_id):
     """Get five-flags run detail"""
     try:
+        _drain_five_flags_queue_once()
         runs = _refresh_five_flags_run_registry(_load_five_flags_runs_registry())
         run = next((r for r in runs if r.get('run_id') == run_id), None)
         if run is None:
@@ -1452,12 +2578,102 @@ def five_flags_run_detail(run_id):
         return jsonify({'error': f'failed to query run detail: {str(e)}'}), 500
 
 
+@app.route('/api/five-flags/flow/level-timing', methods=['GET'])
+def five_flags_flow_level_timing():
+    """Aggregate level timing summary from recent runs."""
+    try:
+        _drain_five_flags_queue_once()
+        limit_runs = _safe_int_arg('limit_runs', 20, min_value=1, max_value=100)
+        flow_id = (request.args.get('flow_id') or '').strip() or None
+        spike_threshold = request.args.get('spike_threshold', default=1.8, type=float)
+        if spike_threshold is None:
+            return jsonify({'error': 'spike_threshold must be float'}), 400
+        if spike_threshold < 1.0 or spike_threshold > 10.0:
+            return jsonify({'error': 'spike_threshold must be between 1.0 and 10.0'}), 400
+
+        runs = _refresh_five_flags_run_registry(_load_five_flags_runs_registry())
+        summary = _build_level_timing_summary(
+            runs,
+            limit_runs=limit_runs,
+            flow_id=flow_id,
+            spike_threshold=spike_threshold
+        )
+
+        return safe_jsonify({
+            'summary': summary,
+            'limit_runs': limit_runs,
+            'spike_threshold': spike_threshold
+        })
+    except Exception as e:
+        return jsonify({'error': f'failed to query level timing summary: {str(e)}'}), 500
+
+
+@app.route('/api/five-flags/phase-profile/publish', methods=['POST'])
+def five_flags_phase_profile_publish():
+    """Publish one phase profile slot to another slot, e.g. candidate -> active."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        raw_phase = payload.get('market_phase')
+        if raw_phase is None or str(raw_phase).strip().lower() == 'default':
+            market_phase = 'default'
+        else:
+            market_phase = _normalize_market_phase(raw_phase)
+
+        from_slot = _normalize_profile_slot(payload.get('from_slot'), default='candidate')
+        to_slot = _normalize_profile_slot(payload.get('to_slot'), default='active')
+        if from_slot == to_slot:
+            return jsonify({'error': 'from_slot and to_slot must be different'}), 400
+
+        profile_path = _resolve_phase_profile_path(payload.get('phase_profile'))
+        doc = _load_phase_profile_doc(profile_path)
+        profiles = doc.setdefault('profiles', {})
+        phase_entry = profiles.setdefault(market_phase, {'active': {}, 'candidate': {}})
+        source_profile = phase_entry.get(from_slot) if isinstance(phase_entry.get(from_slot), dict) else {}
+        if not source_profile:
+            return jsonify({
+                'error': f'cannot publish empty profile: phase={market_phase}, slot={from_slot}'
+            }), 400
+
+        phase_entry[to_slot] = json.loads(json.dumps(source_profile, ensure_ascii=False))
+        metadata = doc.setdefault('metadata', {})
+        metadata['version'] = f"v{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        metadata['updated_at'] = datetime.now().isoformat()
+        metadata['last_publish'] = {
+            'market_phase': market_phase,
+            'from_slot': from_slot,
+            'to_slot': to_slot,
+            'published_by': (payload.get('published_by') or 'api').strip() or 'api',
+            'calibration_note': (payload.get('calibration_note') or '').strip() or None,
+            'published_at': datetime.now().isoformat()
+        }
+        _save_phase_profile_doc(profile_path, doc)
+
+        return safe_jsonify({
+            'status': 'published',
+            'phase_profile': str(profile_path),
+            'market_phase': market_phase,
+            'from_slot': from_slot,
+            'to_slot': to_slot,
+            'profile_version': metadata.get('version'),
+            'override_screeners': sorted(list(source_profile.keys()))
+        })
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': f'failed to publish phase profile: {str(e)}'}), 500
+
+
 @app.route('/api/five-flags/run', methods=['POST'])
 def five_flags_run():
-    """Start five-flags screening task asynchronously"""
+    """Enqueue five-flags screening task (serial scheduler)"""
     try:
         payload = request.get_json(silent=True) or {}
         pool_ids = payload.get('pool_ids') or []
+        flow_config = payload.get('flow_config')
+        market_phase = _normalize_market_phase(payload.get('market_phase'))
+        phase_profile = payload.get('phase_profile')
+        profile_slot = _normalize_profile_slot(payload.get('profile_slot'), default='active')
+        calibration_note = (payload.get('calibration_note') or '').strip() or None
         dry_run = bool(payload.get('dry_run', False))
         max_workers = payload.get('max_workers')
 
@@ -1480,22 +2696,64 @@ def five_flags_run():
                 return jsonify({'error': 'max_workers must be integer'}), 400
             max_workers = max(1, min(8, max_workers))
 
-        # Guard: allow only one active run to avoid dashboard resource contention
-        runs = _refresh_five_flags_run_registry(_load_five_flags_runs_registry())
-        active = next((r for r in runs if r.get('status') in ('running', 'accepted')), None)
-        if active and _is_pid_running(active.get('pid')):
-            return jsonify({
-                'error': 'five-flags run already in progress',
-                'active_run_id': active.get('run_id')
-            }), 409
+        # For default manual run (no explicit pool_ids), apply same readiness guard as daily_auto.
+        if not normalized_pool_ids and not dry_run:
+            readiness = _check_five_flags_unprocessed_data_readiness()
+            if not readiness.get('ready'):
+                return safe_jsonify({
+                    'status': 'skipped',
+                    'accepted': False,
+                    'reason': readiness.get('reason'),
+                    'guard': readiness
+                }), 200
 
-        result = _start_five_flags_run(
+        if dry_run:
+            result = _start_five_flags_run(
+                pool_ids=normalized_pool_ids,
+                max_workers=max_workers,
+                dry_run=True,
+                snapshot_id=payload.get('snapshot_id'),
+                flow_config=flow_config,
+                market_phase=market_phase,
+                phase_profile=phase_profile,
+                profile_slot=profile_slot,
+                calibration_note=calibration_note
+            )
+            return safe_jsonify(result), 202
+
+        queue_job = _enqueue_five_flags_job(
+            source='manual_run',
             pool_ids=normalized_pool_ids,
             max_workers=max_workers,
-            dry_run=dry_run,
-            snapshot_id=payload.get('snapshot_id')
+            retry_of=None,
+            snapshot_id=payload.get('snapshot_id'),
+            flow_config=flow_config,
+            market_phase=market_phase,
+            phase_profile=phase_profile,
+            profile_slot=profile_slot,
+            calibration_note=calibration_note
         )
-        return safe_jsonify(result), 202
+        started = _drain_five_flags_queue_once()
+        queued_status = 'queued'
+        run_id = None
+        if started and started.get('job_id') == queue_job.get('job_id'):
+            queued_status = 'accepted'
+            run_id = started.get('run_id')
+
+        return safe_jsonify({
+            'job_id': queue_job.get('job_id'),
+            'status': queued_status,
+            'queue_status': queued_status,
+            'run_id': run_id,
+            'accepted': queued_status == 'accepted',
+            'queued_pools': len(normalized_pool_ids),
+            'market_phase': market_phase,
+            'phase_profile': phase_profile,
+            'profile_slot': profile_slot,
+            'calibration_note': calibration_note
+        }), 202
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     except FileNotFoundError as e:
         return jsonify({'error': str(e)}), 404
     except Exception as e:
@@ -1504,10 +2762,15 @@ def five_flags_run():
 
 @app.route('/api/five-flags/retry-failed', methods=['POST'])
 def five_flags_retry_failed():
-    """Retry failed pool items by explicit pool_ids (safe wrapper over /run)"""
+    """Retry failed pool items by explicit pool_ids (serial queued)"""
     try:
         payload = request.get_json(silent=True) or {}
         pool_ids = payload.get('pool_ids') or []
+        flow_config = payload.get('flow_config')
+        market_phase = _normalize_market_phase(payload.get('market_phase'))
+        phase_profile = payload.get('phase_profile')
+        profile_slot = _normalize_profile_slot(payload.get('profile_slot'), default='active')
+        calibration_note = (payload.get('calibration_note') or '').strip() or None
         if not pool_ids:
             return jsonify({'error': 'pool_ids is required for retry'}), 400
         if not isinstance(pool_ids, list):
@@ -1531,29 +2794,99 @@ def five_flags_retry_failed():
                 return jsonify({'error': 'max_workers must be integer'}), 400
             max_workers = max(1, min(8, max_workers))
 
-        runs = _refresh_five_flags_run_registry(_load_five_flags_runs_registry())
-        active = next((r for r in runs if r.get('status') in ('running', 'accepted')), None)
-        if active and _is_pid_running(active.get('pid')):
-            return jsonify({
-                'error': 'five-flags run already in progress',
-                'active_run_id': active.get('run_id')
-            }), 409
-
-        result = _start_five_flags_run(
+        queue_job = _enqueue_five_flags_job(
+            source='retry_failed',
             pool_ids=normalized_pool_ids,
             max_workers=max_workers,
-            dry_run=False,
-            retry_of=payload.get('run_id')
+            retry_of=payload.get('run_id'),
+            flow_config=flow_config,
+            market_phase=market_phase,
+            phase_profile=phase_profile,
+            profile_slot=profile_slot,
+            calibration_note=calibration_note
         )
+        started = _drain_five_flags_queue_once()
+        queued_status = 'queued'
+        run_id = None
+        if started and started.get('job_id') == queue_job.get('job_id'):
+            queued_status = 'accepted'
+            run_id = started.get('run_id')
+
         return safe_jsonify({
-            'retry_run_id': result.get('run_id'),
-            'status': result.get('status'),
-            'retry_count': len(normalized_pool_ids)
+            'job_id': queue_job.get('job_id'),
+            'retry_run_id': run_id,
+            'status': queued_status,
+            'queue_status': queued_status,
+            'accepted': queued_status == 'accepted',
+            'retry_count': len(normalized_pool_ids),
+            'market_phase': market_phase,
+            'phase_profile': phase_profile,
+            'profile_slot': profile_slot,
+            'calibration_note': calibration_note
         }), 202
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     except FileNotFoundError as e:
         return jsonify({'error': str(e)}), 404
     except Exception as e:
         return jsonify({'error': f'failed to retry failed pools: {str(e)}'}), 500
+
+
+@app.route('/api/five-flags/queue', methods=['GET'])
+def five_flags_queue():
+    """Query five-flags serial queue status"""
+    try:
+        _drain_five_flags_queue_once()
+        limit = _safe_int_arg('limit', 50, min_value=1, max_value=500)
+        items = sorted(_refresh_five_flags_queue_status(), key=lambda x: x.get('requested_at') or '', reverse=True)
+        queue_items = items[:limit]
+        stats = {
+            'queued': len([x for x in items if x.get('status') == 'queued']),
+            'started': len([x for x in items if x.get('status') == 'started']),
+            'completed': len([x for x in items if x.get('status') == 'completed']),
+            'failed': len([x for x in items if x.get('status') == 'failed'])
+        }
+        return safe_jsonify({
+            'items': queue_items,
+            'stats': stats,
+            'limit': limit
+        })
+    except Exception as e:
+        return jsonify({'error': f'failed to query queue: {str(e)}'}), 500
+
+
+@app.route('/api/five-flags/queue/<job_id>', methods=['GET'])
+def five_flags_queue_detail(job_id):
+    """Query one queue job by job_id"""
+    try:
+        _drain_five_flags_queue_once()
+        items = _refresh_five_flags_queue_status()
+        job = next((x for x in items if x.get('job_id') == job_id), None)
+        if not job:
+            return jsonify({'error': f'job_id not found: {job_id}'}), 404
+        return safe_jsonify({'job': job})
+    except Exception as e:
+        return jsonify({'error': f'failed to query queue detail: {str(e)}'}), 500
+
+
+@app.route('/api/five-flags/pools/upload-status/<job_id>', methods=['GET'])
+def five_flags_pool_upload_status(job_id):
+    """Query upload-triggered queue status by job_id"""
+    try:
+        _drain_five_flags_queue_once()
+        items = _refresh_five_flags_queue_status()
+        job = next((x for x in items if x.get('job_id') == job_id), None)
+        if not job:
+            return jsonify({'error': f'job_id not found: {job_id}'}), 404
+        if job.get('source') != 'pool_upload':
+            return jsonify({'error': f'job_id is not a pool_upload job: {job_id}'}), 400
+        return safe_jsonify({'job': job})
+    except Exception as e:
+        return jsonify({'error': f'failed to query upload status: {str(e)}'}), 500
+
+
+_start_five_flags_queue_worker()
+_start_five_flags_daily_scheduler()
 
 
 if __name__ == '__main__':

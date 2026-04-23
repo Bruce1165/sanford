@@ -14,7 +14,7 @@ import re
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -567,3 +567,289 @@ def handle_excel_upload(file_path: str, force_update: bool = False) -> Dict[str,
     """
     handler = ExcelUploadHandler()
     return handler.process_upload(file_path, force_update=force_update)
+
+
+def _normalize_cn_stock_code(raw_value: Any) -> Optional[str]:
+    if pd.isna(raw_value) or raw_value is None:
+        return None
+    value = str(raw_value).strip().replace('="', '').replace('"', '')
+    if not value:
+        return None
+    if value.isdigit():
+        return value.zfill(6)
+    return value
+
+
+def _parse_yyMMdd_to_date(raw: str) -> str:
+    if not re.fullmatch(r'\d{6}', raw):
+        raise ValueError(f"invalid yymmdd: {raw}")
+    year = int(raw[:2]) + 2000
+    month = int(raw[2:4])
+    day = int(raw[4:6])
+    dt = datetime(year, month, day)
+    return dt.strftime('%Y-%m-%d')
+
+
+def _parse_lao_ya_tou_file_dates(file_name: str) -> Tuple[str, str]:
+    """
+    Parse file date range from:
+    - 老鸭头YYMMDD.xlsx
+    - 老鸭头YYMMDD-YYMMDD.xlsx
+    """
+    base_name = Path(file_name).name
+    m_range = re.match(r'^老鸭头(\d{6})-(\d{6})\.(xlsx|xls)$', base_name)
+    if m_range:
+        start_date = _parse_yyMMdd_to_date(m_range.group(1))
+        end_date = _parse_yyMMdd_to_date(m_range.group(2))
+        if start_date > end_date:
+            raise ValueError(f"invalid file date range: {base_name}")
+        return start_date, end_date
+
+    m_single = re.match(r'^老鸭头(\d{6})\.(xlsx|xls)$', base_name)
+    if m_single:
+        d = _parse_yyMMdd_to_date(m_single.group(1))
+        return d, d
+
+    raise ValueError(
+        "文件名格式错误：应为 老鸭头YYMMDD.xlsx 或 老鸭头YYMMDD-YYMMDD.xlsx"
+    )
+
+
+def _parse_excel_date_or_none(value: Any) -> Optional[str]:
+    if pd.isna(value) or value is None or str(value).strip() == '':
+        return None
+
+    if isinstance(value, datetime):
+        return value.strftime('%Y-%m-%d')
+
+    text = str(value).strip()
+    text = text.replace('年', '-').replace('月', '-').replace('日', '')
+    text = text.replace('/', '-').replace('.', '-')
+    try:
+        dt = datetime.strptime(text, '%Y-%m-%d')
+        return dt.strftime('%Y-%m-%d')
+    except ValueError:
+        pass
+
+    if text.isdigit() and len(text) == 8:
+        try:
+            dt = datetime.strptime(text, '%Y%m%d')
+            return dt.strftime('%Y-%m-%d')
+        except ValueError:
+            pass
+
+    try:
+        serial = float(text)
+        base = datetime(1899, 12, 30)
+        dt = base + pd.to_timedelta(int(serial), unit='D')
+        return dt.strftime('%Y-%m-%d')
+    except Exception:
+        return None
+
+
+def _resolve_pool_columns(df: pd.DataFrame) -> Dict[str, Optional[str]]:
+    def normalize_col(value: Any) -> str:
+        text = str(value or '').strip().lower()
+        # Normalize full-width parenthesis and ignore trailing marker like 名称(1039)/名称（1039）
+        text = text.replace('（', '(').replace('）', ')')
+        text = re.sub(r'\([^)]*\)', '', text)
+        text = re.sub(r'\s+', '', text)
+        return text
+
+    mappings = {
+        'stock_code': ['代码', '股票代码', 'stock_code', 'code'],
+        'stock_name': ['名称', '股票名称', 'name', 'stock_name', '名称(1039)'],
+        'sector_compound': ['一二级行业', '一级二级行业', '所属行业'],
+        'start_date': ['开始日期', 'start_date'],
+        'end_date': ['结束日期', 'end_date']
+    }
+
+    resolved = {'stock_code': None, 'stock_name': None, 'sector_compound': None, 'start_date': None, 'end_date': None}
+    normalized = {}
+    for col in df.columns:
+        key = normalize_col(col)
+        if key and key not in normalized:
+            normalized[key] = col
+
+    for key, aliases in mappings.items():
+        for alias in aliases:
+            col = normalized.get(normalize_col(alias))
+            if col is not None:
+                resolved[key] = col
+                break
+    return resolved
+
+
+def _parse_sector_compound(value: Any) -> Tuple[Optional[str], Optional[str]]:
+    text = str(value or '').strip()
+    if not text:
+        return None, None
+    text = text.replace('（', '(').replace('）', ')')
+    parts = [x.strip() for x in re.split(r'[-/|]', text, maxsplit=1) if x and str(x).strip()]
+    if len(parts) >= 2:
+        return parts[0], parts[1]
+    return parts[0], None
+
+
+def _sync_pool_sector_to_stock_meta(records: List[Dict[str, Optional[str]]]) -> Dict[str, int]:
+    """
+    Scheme A: persist sector info to stock_meta as single metadata source.
+    """
+    merged: Dict[str, Dict[str, Optional[str]]] = {}
+    for item in records:
+        code = str(item.get('stock_code') or '').strip()
+        if not code:
+            continue
+        target = merged.get(code) or {'stock_code': code, 'sector_lv1': None, 'sector_lv2': None}
+        if item.get('sector_lv1'):
+            target['sector_lv1'] = str(item['sector_lv1']).strip()
+        if item.get('sector_lv2'):
+            target['sector_lv2'] = str(item['sector_lv2']).strip()
+        merged[code] = target
+
+    if not merged:
+        return {'candidates': 0, 'stock_meta_updated': 0}
+
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        cursor = conn.cursor()
+        stock_meta_updated = 0
+        now = datetime.now().isoformat()
+        for item in merged.values():
+            code = item['stock_code']
+            sector_lv1 = item.get('sector_lv1')
+            sector_lv2 = item.get('sector_lv2')
+            if not sector_lv1 and not sector_lv2:
+                continue
+
+            meta_set_parts = []
+            meta_args: List[Any] = []
+            if sector_lv1:
+                meta_set_parts.append('sector_lv1 = ?')
+                meta_args.append(sector_lv1)
+            if sector_lv2:
+                meta_set_parts.append('sector_lv2 = ?')
+                meta_args.append(sector_lv2)
+            meta_set_parts.append('updated_at = ?')
+            meta_args.append(now)
+            meta_args.append(code)
+            meta_sql = f"UPDATE stock_meta SET {', '.join(meta_set_parts)} WHERE code = ?"
+            cursor.execute(meta_sql, meta_args)
+            stock_meta_updated += max(0, cursor.rowcount)
+
+        conn.commit()
+        return {
+            'candidates': len(merged),
+            'stock_meta_updated': stock_meta_updated
+        }
+    finally:
+        conn.close()
+
+
+def handle_lao_ya_tou_pool_upload(file_path: str, force_overwrite: bool = False) -> Dict[str, Any]:
+    """
+    Upload Lao Ya Tou pool file into lao_ya_tou_pool with two modes:
+    - incremental append (default, idempotent by pool_biz_key)
+    - force overwrite (clear pool + results, then rebuild)
+    """
+    result = {
+        'status': 'error',
+        'message': '',
+        'mode': 'force_overwrite' if force_overwrite else 'incremental',
+        'file_name': Path(file_path).name
+    }
+
+    try:
+        start_date, end_date = _parse_lao_ya_tou_file_dates(result['file_name'])
+    except Exception as e:
+        result['message'] = str(e)
+        return result
+
+    try:
+        df = pd.read_excel(file_path, dtype=str)
+    except Exception as e:
+        result['message'] = f"读取 Excel 失败: {e}"
+        return result
+
+    colmap = _resolve_pool_columns(df)
+    if not colmap['stock_code'] or not colmap['stock_name']:
+        result['message'] = "缺少必需列：股票代码/股票名称"
+        return result
+
+    records: List[Dict[str, str]] = []
+    sector_sync_records: List[Dict[str, Optional[str]]] = []
+    row_errors: List[str] = []
+    file_name = result['file_name']
+
+    for idx, row in df.iterrows():
+        stock_code = _normalize_cn_stock_code(row.get(colmap['stock_code']))
+        stock_name = str(row.get(colmap['stock_name']) or '').strip()
+        row_start = _parse_excel_date_or_none(row.get(colmap['start_date'])) if colmap['start_date'] else None
+        row_end = _parse_excel_date_or_none(row.get(colmap['end_date'])) if colmap['end_date'] else None
+
+        if not stock_code or not stock_code.isdigit() or len(stock_code) != 6:
+            row_errors.append(f"第 {idx + 2} 行股票代码无效: {row.get(colmap['stock_code'])}")
+            continue
+        if not stock_name:
+            row_errors.append(f"第 {idx + 2} 行股票名称为空")
+            continue
+        if row_start and row_start != start_date:
+            row_errors.append(f"第 {idx + 2} 行开始日期与文件名不一致: {row_start} != {start_date}")
+            continue
+        if row_end and row_end != end_date:
+            row_errors.append(f"第 {idx + 2} 行结束日期与文件名不一致: {row_end} != {end_date}")
+            continue
+
+        records.append({
+            'stock_code': stock_code,
+            'stock_name': stock_name,
+            'start_date': start_date,
+            'end_date': end_date,
+            'file_name': file_name
+        })
+        sector_lv1, sector_lv2 = _parse_sector_compound(row.get(colmap.get('sector_compound')))
+        sector_sync_records.append({
+            'stock_code': stock_code,
+            'sector_lv1': sector_lv1,
+            'sector_lv2': sector_lv2,
+        })
+
+    if row_errors:
+        result['message'] = f"上传被阻断：发现 {len(row_errors)} 条日期/字段错误"
+        result['errors'] = row_errors[:20]
+        return result
+
+    if not records:
+        result['message'] = "上传被阻断：未解析到有效记录"
+        return result
+
+    from scripts.database.lao_ya_tou_pool import LaoYaTouPoolRepository
+
+    repo = LaoYaTouPoolRepository(str(DB_PATH))
+    try:
+        if force_overwrite:
+            write_stat = repo.force_overwrite_pool(records)
+            sector_sync_stat = _sync_pool_sector_to_stock_meta(sector_sync_records)
+            result.update({
+                'status': 'success',
+                'message': f"强制覆盖成功：重建 {write_stat['inserted']} 条",
+                'write_stat': write_stat,
+                'sector_sync': sector_sync_stat,
+                'date_range': {'start_date': start_date, 'end_date': end_date},
+                'uploaded': len(records)
+            })
+        else:
+            write_stat = repo.upsert_pool_batch(records)
+            sector_sync_stat = _sync_pool_sector_to_stock_meta(sector_sync_records)
+            result.update({
+                'status': 'success',
+                'message': f"增量导入成功：新增 {write_stat['inserted']} 条，跳过重复 {write_stat['skipped']} 条",
+                'write_stat': write_stat,
+                'sector_sync': sector_sync_stat,
+                'date_range': {'start_date': start_date, 'end_date': end_date},
+                'uploaded': len(records)
+            })
+    finally:
+        repo.close()
+
+    return result
