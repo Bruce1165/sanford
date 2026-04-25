@@ -10,8 +10,29 @@ import { ScreenerConfig } from './components/ScreenerConfig';
 
 // Backend API configuration
 // Use proxy in development, auto-detect in production
-const isDev = (import.meta as any).env?.DEV === 'true';
-const API_BASE = isDev ? '/api' : `${window.location.origin}/api`;
+const env = (import.meta as any).env ?? {};
+const isDev = Boolean(env.DEV);
+const normalizeApiBase = (raw: string): string => {
+  const cleaned = raw.trim().replace(/\/+$/, '');
+  if (!cleaned) return '';
+  if (/^https?:\/\//i.test(cleaned) || cleaned.startsWith('/')) return cleaned;
+  if (
+    /^localhost(?::\d+)?(\/.*)?$/i.test(cleaned) ||
+    /^\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(\/.*)?$/.test(cleaned) ||
+    /^[a-z0-9.-]+\.[a-z]{2,}(?::\d+)?(\/.*)?$/i.test(cleaned)
+  ) {
+    return `http://${cleaned}`;
+  }
+  return `/${cleaned.replace(/^\/+/, '')}`;
+};
+const envApiBase = typeof env.VITE_API_BASE === 'string' ? normalizeApiBase(env.VITE_API_BASE) : '';
+const API_BASE = envApiBase || (
+  isDev
+    ? '/api'
+    : (window.location.origin && window.location.origin !== 'null'
+      ? `${window.location.origin}/api`
+      : 'http://127.0.0.1:5003/api')
+);
 
 // Get today's date in YYYY-MM-DD format
 const getTodayString = () => {
@@ -40,6 +61,10 @@ interface CheckResult {
 }
 
 function App() {
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    const saved = window.localStorage.getItem('neo_theme');
+    return saved === 'light' ? 'light' : 'dark';
+  });
   const [screeners, setScreeners] = useState<Screener[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentTime, setCurrentTime] = useState(() => new Date().toLocaleTimeString('zh-CN'));
@@ -64,6 +89,33 @@ function App() {
   };
 
   const [activeTab, setActiveTab] = useState(getInitialTab());
+  const isLight = theme === 'light';
+  const [dashboardLeftCollapsed, setDashboardLeftCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem('neo_dashboard_left_collapsed') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [dashboardMidCollapsed, setDashboardMidCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem('neo_dashboard_mid_collapsed') === '1';
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    window.localStorage.setItem('neo_theme', theme);
+  }, [theme]);
+
+  useEffect(() => {
+    window.localStorage.setItem('neo_dashboard_left_collapsed', dashboardLeftCollapsed ? '1' : '0');
+  }, [dashboardLeftCollapsed]);
+
+  useEffect(() => {
+    window.localStorage.setItem('neo_dashboard_mid_collapsed', dashboardMidCollapsed ? '1' : '0');
+  }, [dashboardMidCollapsed]);
 
   // Update URL when tab changes
   const handleTabChange = (tabId: string) => {
@@ -107,7 +159,7 @@ function App() {
     : dhStatus.status === 'critical' ? '#ff4757' : '#555';
 
   return (
-    <div className="neo-app">
+    <div className={`neo-app neo-theme-${theme}`}>
 
       {/* ── Top Bar ── */}
       <header className="neo-topbar">
@@ -123,25 +175,36 @@ function App() {
           <h1 className="logo">NEO TERMINAL</h1>
         </div>
         <div className="neo-topbar-right">
+          <button
+            className="neo-theme-toggle"
+            onClick={() => setTheme(prev => (prev === 'dark' ? 'light' : 'dark'))}
+            title={theme === 'dark' ? '切换浅色模式' : '切换深色模式'}
+          >
+            {theme === 'dark' ? 'Light' : 'Dark'}
+          </button>
           <div
             onClick={() => setShowHealth(v => !v)}
             className="neo-live-btn"
             style={{
-              background: showHealth ? 'rgba(255,203,5,0.15)' : 'rgba(255,255,255,0.07)',
-              border: `1px solid ${showHealth ? 'rgba(255,203,5,0.6)' : 'rgba(255,255,255,0.22)'}`,
+              background: showHealth
+                ? (isLight ? 'rgba(30,64,175,0.12)' : 'rgba(255,203,5,0.15)')
+                : (isLight ? 'rgba(30,64,175,0.04)' : 'rgba(255,255,255,0.07)'),
+              border: `1px solid ${showHealth
+                ? (isLight ? 'rgba(30,64,175,0.45)' : 'rgba(255,203,5,0.6)')
+                : (isLight ? 'rgba(30,64,175,0.28)' : 'rgba(255,255,255,0.22)')}`,
               transition: 'all 0.15s ease',
               cursor: 'pointer',
             }}
             onMouseEnter={(e) => {
               if (!showHealth) {
-                e.currentTarget.style.borderColor = 'rgba(255,255,255,0.35)';
-                e.currentTarget.style.background = 'rgba(255,255,255,0.12)';
+                e.currentTarget.style.borderColor = isLight ? 'rgba(30,64,175,0.45)' : 'rgba(255,255,255,0.35)';
+                e.currentTarget.style.background = isLight ? 'rgba(30,64,175,0.08)' : 'rgba(255,255,255,0.12)';
               }
             }}
             onMouseLeave={(e) => {
               if (!showHealth) {
-                e.currentTarget.style.borderColor = 'rgba(255,255,255,0.22)';
-                e.currentTarget.style.background = 'rgba(255,255,255,0.07)';
+                e.currentTarget.style.borderColor = isLight ? 'rgba(30,64,175,0.28)' : 'rgba(255,255,255,0.22)';
+                e.currentTarget.style.background = isLight ? 'rgba(30,64,175,0.04)' : 'rgba(255,255,255,0.07)';
               }
             }}
             onMouseDown={(e) => {
@@ -160,22 +223,22 @@ function App() {
             <span style={{
               color: dhStatus.status === 'warning' ? '#ff9f43'
                    : dhStatus.status === 'healthy'  ? '#00e676'
-                   : '#c8c8c8',
+                   : (isLight ? '#334155' : '#c8c8c8'),
               fontWeight: 700, fontSize: 11, letterSpacing: '0.12em',
             }}>
               {dhStatus.status === 'warning' ? 'WARNING'
                : dhStatus.status === 'healthy' ? 'LIVE'
                : 'LIVE'}
             </span>
-            <span style={{color: 'rgba(255,255,255,0.5)', fontSize: 11}}>
+            <span style={{color: isLight ? 'rgba(15,23,42,0.55)' : 'rgba(255,255,255,0.5)', fontSize: 11}}>
               {dhStatus.time}
             </span>
             {dhStatus.stocks > 0 && (
-              <span style={{color: 'rgba(255,255,255,0.35)', fontSize: 11}}>
+              <span style={{color: isLight ? 'rgba(15,23,42,0.45)' : 'rgba(255,255,255,0.35)', fontSize: 11}}>
                 · {dhStatus.stocks.toLocaleString()} stocks
               </span>
             )}
-            <span style={{color: '#FFCB05', fontSize: 10, fontWeight: 700}}>
+            <span style={{color: isLight ? '#1e40af' : '#FFCB05', fontSize: 10, fontWeight: 700}}>
               {showHealth ? '▲' : '▼'}
             </span>
           </div>
@@ -192,22 +255,23 @@ function App() {
             width: 750,
             maxHeight: 'calc(100vh - 40px)',
             overflowY: 'auto',
-            background: '#0a1628',
-            border: '1px solid rgba(255,203,5,0.2)',
+            background: isLight ? '#ffffff' : '#0a1628',
+            border: `1px solid ${isLight ? 'rgba(30,64,175,0.2)' : 'rgba(255,203,5,0.2)'}`,
             borderTop: 'none',
             borderRadius: '0 0 0 12px',
-            boxShadow: '0 20px 60px rgba(0,0,0,0.7)',
+            boxShadow: isLight ? '0 12px 40px rgba(15,23,42,0.15)' : '0 20px 60px rgba(0,0,0,0.7)',
             zIndex: 2000,
             padding: '16px',
           }}
           onClick={e => e.stopPropagation()}
         >
           <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}}>
-            <span style={{color:'#FFCB05', fontWeight:700, fontSize:11, letterSpacing:'0.15em'}}>DATA HEALTH</span>
+            <span style={{color:isLight ? '#1e40af' : '#FFCB05', fontWeight:700, fontSize:11, letterSpacing:'0.15em'}}>DATA HEALTH</span>
             <button
               onClick={() => setShowHealth(false)}
-              style={{background:'rgba(255,203,5,0.1)', border:'1px solid rgba(255,203,5,0.3)',
-                color:'#FFCB05', borderRadius:'50%', width:22, height:22, cursor:'pointer',
+              style={{background:isLight ? 'rgba(30,64,175,0.08)' : 'rgba(255,203,5,0.1)',
+                border: isLight ? '1px solid rgba(30,64,175,0.28)' : '1px solid rgba(255,203,5,0.3)',
+                color:isLight ? '#1e40af' : '#FFCB05', borderRadius:'50%', width:22, height:22, cursor:'pointer',
                 fontSize:13, display:'flex', alignItems:'center', justifyContent:'center'}}
             >×</button>
           </div>
@@ -216,21 +280,42 @@ function App() {
       )}
 
       {/* ── Three-Column Layout ── */}
-      <div className="neo-workspace" onClick={() => setShowHealth(false)}>
+      <div
+        className={`neo-workspace${dashboardLeftCollapsed ? ' neo-left-collapsed' : ''}${dashboardMidCollapsed ? ' neo-mid-collapsed' : ''}`}
+        onClick={() => setShowHealth(false)}
+      >
 
         {/* LEFT — Screeners (22%) */}
         <aside className="neo-col-left">
-          <ScreenersView screeners={screeners} loading={loading} />
+          <button
+            className="neo-col-collapse-btn neo-col-collapse-left"
+            onClick={() => setDashboardLeftCollapsed((prev) => !prev)}
+            title={dashboardLeftCollapsed ? '展开左区' : '折叠左区'}
+          >
+            {dashboardLeftCollapsed ? '▶' : '◀'}
+          </button>
+          <div className="neo-col-content">
+            <ScreenersView screeners={screeners} loading={loading} />
+          </div>
         </aside>
 
         {/* MIDDLE — Results + Detail (38%) */}
         <section className="neo-col-mid">
-          <ResultsView screeners={screeners} selectedScreener={selectedScreener} setSelectedScreener={setSelectedScreener} />
+          <button
+            className="neo-col-collapse-btn neo-col-collapse-mid"
+            onClick={() => setDashboardMidCollapsed((prev) => !prev)}
+            title={dashboardMidCollapsed ? '展开中区' : '折叠中区'}
+          >
+            {dashboardMidCollapsed ? '▶' : '◀'}
+          </button>
+          <div className="neo-col-content">
+            <ResultsView theme={theme} screeners={screeners} selectedScreener={selectedScreener} setSelectedScreener={setSelectedScreener} />
+          </div>
         </section>
 
         {/* RIGHT — Monitoring (40%) */}
           <section className="neo-col-right">
-            <FiveFlagsMonitor />
+            <FiveFlagsMonitor theme={theme} />
           </section>
 
       </div>
@@ -379,7 +464,7 @@ function DashboardView({ screenerCount }: { screenerCount: number }) {
 
 // ── Screeners Left Panel — Mockup strict ──
 function ScreenersView({ screeners, loading }: { screeners: Screener[], loading: boolean }) {
-  const [activeCategory, setActiveCategory] = useState<string>('内部公式');
+  const [activeCategory, setActiveCategory] = useState<string>('');
   const [showRetired, setShowRetired] = useState(false);
   const [runModal, setRunModal] = useState<{open: boolean, screener: Screener | null}>({ open: false, screener: null });
 
@@ -415,10 +500,7 @@ function ScreenersView({ screeners, loading }: { screeners: Screener[], loading:
     setCheckLoading(false);
   }, [checkScreener]);
 
-  const categories = ['内部公式', '经典公式', '其它'];
-
-  // 筛选器分类映射
-  const getScreenerCategory = (name: string): string => {
+  const getLegacyScreenerCategory = (name: string): string => {
     const internalFormulas = [
       'coffee_cup_v4',
       'daily_hot_cold',
@@ -441,18 +523,66 @@ function ScreenersView({ screeners, loading }: { screeners: Screener[], loading:
 
     if (internalFormulas.includes(name)) return '内部公式';
     if (classicFormulas.includes(name)) return '经典公式';
-    return '经典公式';
+    return '其它';
   };
 
-  const filtered = screeners.filter(s => {
-    if (activeCategory === '内部公式') {
-      return getScreenerCategory(s.name) === '内部公式';
+  const normalizeCategory = (category?: string): string | null => {
+    const raw = (category || '').trim();
+    if (!raw) return null;
+
+    const lowered = raw.toLowerCase();
+    if (raw === '内部公式' || lowered.includes('internal') || raw.includes('内部')) {
+      return '内部公式';
     }
-    if (activeCategory === '经典公式') {
-      return getScreenerCategory(s.name) === '经典公式';
+    if (raw === '经典公式' || lowered.includes('classic') || raw.includes('经典')) {
+      return '经典公式';
     }
-    return true;
-  });
+    if (raw === '其它' || raw === '其他' || lowered.includes('other') || raw.includes('未分类')) {
+      return '其它';
+    }
+    return raw;
+  };
+
+  const getScreenerCategory = (screener: Screener): string => {
+    const fromMetadata = normalizeCategory(screener.category);
+    if (fromMetadata) {
+      return fromMetadata;
+    }
+    return getLegacyScreenerCategory(screener.name);
+  };
+
+  const groupedScreeners = screeners.reduce<Record<string, Screener[]>>((acc, screener) => {
+    const category = getScreenerCategory(screener);
+    if (!acc[category]) {
+      acc[category] = [];
+    }
+    acc[category].push(screener);
+    return acc;
+  }, {});
+
+  const preferredCategoryOrder = ['内部公式', '经典公式', '其它'];
+  const extraCategories = Object.keys(groupedScreeners)
+    .filter(category => !preferredCategoryOrder.includes(category))
+    .sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  const categories = [
+    ...preferredCategoryOrder.filter(category => groupedScreeners[category]?.length),
+    ...extraCategories
+  ];
+
+  useEffect(() => {
+    if (categories.length === 0) {
+      if (activeCategory !== '') {
+        setActiveCategory('');
+      }
+      return;
+    }
+    if (!activeCategory || !categories.includes(activeCategory)) {
+      setActiveCategory(categories[0]);
+    }
+  }, [screeners, categories, activeCategory]);
+
+  const filtered = activeCategory ? (groupedScreeners[activeCategory] || []) : screeners;
+  const getScreenerKey = (s: Screener, index: number) => `${String(s.id ?? 'na')}-${s.name || 'unknown'}-${index}`;
 
   const handleCheck = async () => {
     if (!checkCode.trim() || !checkScreener) return;
@@ -484,7 +614,7 @@ function ScreenersView({ screeners, loading }: { screeners: Screener[], loading:
 
       {/* ── Header ── */}
       <div className="sl-header">
-        <span className="sl-title">SCREENERS</span>
+        <span className="sl-title">股票筛选器</span>
         <span className="sl-badge">{screeners.length}</span>
       </div>
 
@@ -528,8 +658,8 @@ function ScreenersView({ screeners, loading }: { screeners: Screener[], loading:
             className="sl-check-select"
             value={checkScreener}
             onChange={e => setCheckScreener(e.target.value)}>
-            {screeners.map(s => (
-              <option key={s.id} value={s.name}>{s.display_name || s.name}</option>
+            {screeners.map((s, idx) => (
+              <option key={getScreenerKey(s, idx)} value={s.name}>{s.display_name || s.name}</option>
             ))}
           </select>
           <button className="sl-check-btn" onClick={handleCheck} disabled={checkLoading}>
@@ -575,8 +705,8 @@ function ScreenersView({ screeners, loading }: { screeners: Screener[], loading:
       {/* ── Screener List ── */}
       <div className="sl-list">
         {loading && <div className="sl-loading">Loading...</div>}
-        {!loading && filtered.map(s => (
-          <div key={s.id} className="sl-card">
+        {!loading && filtered.map((s, idx) => (
+          <div key={getScreenerKey(s, idx)} className="sl-card">
             <div className="sl-card-left">
               <div className="sl-card-name">{s.display_name || s.name}</div>
               <div className="sl-card-desc">
@@ -591,10 +721,10 @@ function ScreenersView({ screeners, loading }: { screeners: Screener[], loading:
                 }}
                 title="配置参数"
               >
-                ⚙️
+                CFG
               </button>
               <button className="sl-run-btn" onClick={() => setRunModal({ open: true, screener: s })}>
-                ▶ RUN
+                RUN
               </button>
             </div>
           </div>
@@ -877,13 +1007,13 @@ function RunScreenerModal({ screener, onClose }: { screener: Screener, onClose: 
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal modal-wide" onClick={e => e.stopPropagation()}>
-        <div className="modal-header">
+    <div className="neo-modal-overlay" onClick={onClose}>
+      <div className="neo-modal neo-modal-wide" onClick={e => e.stopPropagation()}>
+        <div className="neo-modal-header">
           <h3>▶ Run Screener</h3>
-          <button className="modal-close" onClick={onClose}>×</button>
+          <button className="neo-modal-close" onClick={onClose}>×</button>
         </div>
-        <div className="modal-body">
+        <div className="neo-modal-body">
           <div className="form-row">
             <label>Screener: <strong>{screener.display_name}</strong></label>
             <CalendarWithButton
@@ -985,11 +1115,12 @@ function flattenObject(obj: any, prefix = ''): any {
 
 // ── Inline Stock Detail Panel ──
 function StockDetailPanel({
-  stock, rowData, onClose
+  stock, rowData, onClose, theme = 'dark'
 }: {
   stock: { code: string; name: string };
   rowData: any;
   onClose: () => void;
+  theme?: 'dark' | 'light';
 }) {
   const chartRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -997,6 +1128,7 @@ function StockDetailPanel({
   const [chartDays, setChartDays] = useState<number | 'ytd'>(20);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartError, setChartError] = useState('');
+  const isLight = theme === 'light';
 
   const flat = flattenObject(rowData || {});
   const pe  = flat['extra_data.pe'] ?? flat['pe_ratio'] ?? flat['pe'] ?? flat['PE'] ?? '–';
@@ -1221,17 +1353,18 @@ function StockDetailPanel({
 
   return (
     <div style={{
-      background: '#0a1628', borderTop: '1px solid rgba(255,203,5,0.15)',
+      background: isLight ? '#f8fbff' : '#0a1628',
+      borderTop: `1px solid ${isLight ? 'rgba(30,64,175,0.18)' : 'rgba(255,203,5,0.15)'}`,
       padding: '14px 16px 12px', ...mono,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ color: '#FFCB05', fontWeight: 700, fontSize: 11, letterSpacing: '0.12em' }}>DETAIL</span>
-          <span style={{ color: '#00d4ff', fontWeight: 700, fontSize: 14 }}>{stock.code}</span>
-          <span style={{ color: '#e2e8f0', fontSize: 14 }}>{stock.name}</span>
+          <span style={{ color: isLight ? '#1e40af' : '#FFCB05', fontWeight: 700, fontSize: 11, letterSpacing: '0.12em' }}>DETAIL</span>
+          <span style={{ color: isLight ? '#1d4ed8' : '#00d4ff', fontWeight: 700, fontSize: 14 }}>{stock.code}</span>
+          <span style={{ color: isLight ? '#0f172a' : '#e2e8f0', fontSize: 14 }}>{stock.name}</span>
         </div>
         <button onClick={onClose} style={{
-          background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)',
+          background: 'none', border: 'none', color: isLight ? 'rgba(15,23,42,0.45)' : 'rgba(255,255,255,0.4)',
           fontSize: 16, cursor: 'pointer', padding: '0 4px', lineHeight: 1,
         }}>✕</button>
       </div>
@@ -1244,8 +1377,8 @@ function StockDetailPanel({
             { label: '行业', value: String(ind).substring(0, 8) },
           ].map(({ label, value }) => (
             <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ color: 'rgba(255,255,255,0.45)', fontSize: 11, letterSpacing: '0.08em' }}>{label}</span>
-              <span style={{ color: '#e2e8f0', fontSize: 12, fontWeight: 600 }}>{value}</span>
+              <span style={{ color: isLight ? '#64748b' : 'rgba(255,255,255,0.45)', fontSize: 11, letterSpacing: '0.08em' }}>{label}</span>
+              <span style={{ color: isLight ? '#0f172a' : '#e2e8f0', fontSize: 12, fontWeight: 600 }}>{value}</span>
             </div>
           ))}
         </div>
@@ -1289,7 +1422,24 @@ function StockDetailPanel({
 }
 
 // Results View — Phase 3 redesign
-function ResultsView({ screeners, selectedScreener, setSelectedScreener }: { screeners: Screener[], selectedScreener: string, setSelectedScreener: (s: string) => void }) {
+function ResultsView({ theme = 'dark', screeners, selectedScreener, setSelectedScreener }: { theme?: 'dark' | 'light', screeners: Screener[], selectedScreener: string, setSelectedScreener: (s: string) => void }) {
+  const isLight = theme === 'light';
+  const palette = {
+    headerBg: isLight ? '#f2f7ff' : '#0a1628',
+    headerBorder: isLight ? 'rgba(30, 64, 175, 0.14)' : 'rgba(255,203,5,0.12)',
+    filterBorder: isLight ? 'rgba(148, 163, 184, 0.24)' : 'rgba(255,255,255,0.06)',
+    textMain: isLight ? '#0f172a' : '#e2e8f0',
+    textDim: isLight ? '#334155' : 'rgba(255,255,255,0.68)',
+    textFaint: isLight ? '#64748b' : 'rgba(255,255,255,0.40)',
+    selectBg: isLight ? '#ffffff' : '#0d1f35',
+    selectBorder: isLight ? '#bfccde' : 'rgba(255,255,255,0.12)',
+    rowBorder: isLight ? 'rgba(148, 163, 184, 0.22)' : 'rgba(255,255,255,0.05)',
+    rowOdd: isLight ? 'rgba(30, 64, 175, 0.03)' : 'rgba(255,255,255,0.02)',
+    rowHover: isLight ? 'rgba(30, 64, 175, 0.07)' : 'rgba(255,255,255,0.05)',
+    selectedRow: isLight ? 'rgba(37, 99, 235, 0.12)' : 'rgba(0,212,255,0.08)',
+    bottomBg: isLight ? '#eef4ff' : '#050d1a',
+    accent: isLight ? '#1d4ed8' : '#FFCB05',
+  };
   const [date, setDate] = useState(() => {
     const params = new URLSearchParams(window.location.search);
     const urlDate = params.get('date');
@@ -1315,8 +1465,12 @@ function ResultsView({ screeners, selectedScreener, setSelectedScreener }: { scr
     }
   }, []);
 
-  // Auto-load most recent results on first open (no URL params)
+  // Auto-load latest available results on first open (no URL params).
+  // Supports both calendar payload shapes:
+  // 1) { calendar: [{ date, screeners, total_stocks }, ...] }
+  // 2) { dates: ["YYYY-MM-DD", ...] }
   useEffect(() => {
+    if (screeners.length === 0) return;
     const params = new URLSearchParams(window.location.search);
     if (params.get('screener') || params.get('date') || autoLoaded) return;
     setAutoLoaded(true);
@@ -1324,37 +1478,110 @@ function ResultsView({ screeners, selectedScreener, setSelectedScreener }: { scr
       try {
         const res = await fetch(`${API_BASE}/calendar`);
         const data = await res.json();
-        const calendar: { date: string; screeners: { name: string; stocks_found: number }[]; total_stocks: number }[] = data.calendar || [];
-        const sorted = calendar.filter(c => c.total_stocks > 0).sort((a, b) => b.date.localeCompare(a.date));
-        if (sorted.length === 0) return;
-        const latest = sorted[0];
-        const best = latest.screeners.filter(s => s.stocks_found > 0).sort((a, b) => b.stocks_found - a.stocks_found)[0];
-        if (!best) return;
-        // Directly fetch results with resolved date + screener
         setLoading(true); setError(''); setSelectedStock(null);
-        const p = new URLSearchParams({ screener: best.name, date: latest.date });
-        const r = await fetch(`${API_BASE}/results?${p}`);
-        const d = await r.json();
-        if (d.error) throw new Error(d.error);
-        const rs: any[] = d.results || [];
-        setResults(rs);
-        setDate(latest.date);
-        setSelectedScreener(best.name);
-        if (rs.length > 0) setSelectedStock({ code: rs[0].stock_code, name: rs[0].stock_name, row: rs[0] });
+
+        const calendar: { date: string; screeners: { name: string; stocks_found: number }[]; total_stocks: number }[] =
+          Array.isArray(data.calendar) ? data.calendar : [];
+
+        if (calendar.length > 0) {
+          const sorted = calendar.filter(c => c.total_stocks > 0).sort((a, b) => b.date.localeCompare(a.date));
+          if (sorted.length > 0) {
+            const latest = sorted[0];
+            const best = latest.screeners.filter(s => s.stocks_found > 0).sort((a, b) => b.stocks_found - a.stocks_found)[0];
+            if (best) {
+              const p = new URLSearchParams({ screener: best.name, date: latest.date });
+              const r = await fetch(`${API_BASE}/results?${p}`);
+              const d = await r.json();
+              if (!d || typeof d !== 'object') return;
+              if ('error' in d && (d as any).error) throw new Error((d as any).error);
+              const rs: any[] = d.results || [];
+              setResults(rs);
+              setDate(latest.date);
+              setSelectedScreener(best.name);
+              if (rs.length > 0) setSelectedStock({ code: rs[0].stock_code, name: rs[0].stock_name, row: rs[0] });
+              return;
+            }
+          }
+        }
+
+        const dates: string[] = Array.isArray(data.dates) ? data.dates.filter((d: any) => typeof d === 'string') : [];
+        if (dates.length === 0) return;
+
+        const latestDate = dates[0];
+        const screenerCandidates = Array.from(
+          new Set(
+            [selectedScreener, ...screeners.map(s => s.name)].filter((s): s is string => Boolean(s))
+          )
+        );
+        if (screenerCandidates.length === 0) return;
+
+        for (const screenerName of screenerCandidates) {
+          const p = new URLSearchParams({ screener: screenerName, date: latestDate });
+          const r = await fetch(`${API_BASE}/results?${p}`);
+          const d = await r.json();
+          if (!d || typeof d !== 'object') continue;
+          if ('error' in d && (d as any).error) continue;
+          const rs: any[] = d.results || [];
+          if (rs.length > 0) {
+            setResults(rs);
+            setDate(latestDate);
+            setSelectedScreener(screenerName);
+            setSelectedStock({ code: rs[0].stock_code, name: rs[0].stock_name, row: rs[0] });
+            return;
+          }
+        }
+
+        setDate(latestDate);
+        if (!selectedScreener && screenerCandidates.length > 0) {
+          setSelectedScreener(screenerCandidates[0]);
+        }
       } catch (_) { /* silent */ } finally { setLoading(false); }
     })();
-  }, []);
+  }, [autoLoaded, screeners, selectedScreener, setSelectedScreener]);
 
   const handleQuery = async () => {
     if (!selectedScreener) { setError('请选择筛选器'); return; }
     setLoading(true); setError(''); setSelectedStock(null);
     try {
       const formattedDate = formatDate(date);
-      if (!isValidDate(formattedDate)) { setError('日期格式无效'); setLoading(false); return; }
+      if (!isValidDate(formattedDate)) { setError('日期格式无效'); return; }
+
+      try {
+        const calRes = await fetch(`${API_BASE}/trading-day?date=${encodeURIComponent(formattedDate)}`);
+        if (calRes.ok) {
+          const calData = await calRes.json();
+          if (calData && typeof calData === 'object' && calData.is_trading_day === false) {
+            setResults([]);
+            setError(`非交易日：${formattedDate}`);
+            return;
+          }
+        }
+      } catch (_) {}
+
       const params = new URLSearchParams({ screener: selectedScreener, date: formattedDate });
-      const res = await fetch(`${API_BASE}/results?${params}`);
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      let res = await fetch(`${API_BASE}/results?${params}`);
+      let data = await res.json();
+
+      if (!data) {
+        const runRes = await fetch(`${API_BASE}/screeners/${encodeURIComponent(selectedScreener)}/run`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ date: formattedDate }),
+        });
+        const runData = await runRes.json();
+        if (runData && typeof runData === 'object' && (runData as any).error) {
+          throw new Error((runData as any).message || (runData as any).error);
+        }
+        res = await fetch(`${API_BASE}/results?${params}`);
+        data = await res.json();
+      }
+
+      if (!data || typeof data !== 'object') {
+        setResults([]);
+        setError('');
+        return;
+      }
+      if ('error' in data && (data as any).error) throw new Error((data as any).error);
       if (selectedScreener === 'daily_hot_cold_screener' && (data.hot !== undefined || data.cold !== undefined)) {
         const hot  = (data.hot  || []).map((s: any) => ({ ...s, _type: 'hot',  _category: '热股' }));
         const cold = (data.cold || []).map((s: any) => ({ ...s, _type: 'cold', _category: '冷股' }));
@@ -1363,7 +1590,7 @@ function ResultsView({ screeners, selectedScreener, setSelectedScreener }: { scr
         setResults(data.results || []);
       }
     } catch (e: any) { setError(e.message || '获取结果失败'); setResults([]); }
-    setLoading(false);
+    finally { setLoading(false); }
   };
 
   const activeScreener = screeners.find(s => s.name === selectedScreener);
@@ -1419,50 +1646,56 @@ function ResultsView({ screeners, selectedScreener, setSelectedScreener }: { scr
     a.download = `${selectedScreener}_${date}.xlsx`; document.body.appendChild(a); a.click(); document.body.removeChild(a);
   };
 
+  const resultFontFamily = "'SF Mono','Courier New',monospace";
+  const resultFont: React.CSSProperties = { fontFamily: resultFontFamily };
   const mono: React.CSSProperties = { fontFamily: "'SF Mono','Courier New',monospace" };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', ...mono }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', ...resultFont }}>
 
       {/* ── Header bar ── */}
-      <div style={{
+      <div className="results-header-bar" style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '0 16px', height: 40, flexShrink: 0,
-        borderBottom: '1px solid rgba(255,203,5,0.12)', background: '#0a1628',
+        padding: '0 16px', height: isLight ? 42 : 42, flexShrink: 0,
+        borderBottom: `1px solid ${palette.headerBorder}`, background: palette.headerBg,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ color: '#FFCB05', fontWeight: 700, fontSize: 12, letterSpacing: '0.15em' }}>RESULTS</span>
-          <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 12 }}>—</span>
-          <span style={{ color: '#e2e8f0', fontSize: 12 }}>{displayName}</span>
-          <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12 }}>@ {date}</span>
+          <span style={{ color: palette.accent, fontWeight: 700, fontSize: isLight ? 11 : 13, letterSpacing: isLight ? '0.1em' : '0.15em' }}>筛选结果</span>
+          <span style={{ color: palette.textFaint, fontSize: isLight ? 10 : 12 }}>—</span>
+          <span className="results-title-display" style={{ color: isLight ? '#0f172a' : palette.textMain, fontSize: isLight ? 12 : 14, fontWeight: isLight ? 600 : 500, lineHeight: 1.2 }}>{displayName}</span>
+          <span className="results-title-date" style={{ color: isLight ? '#334155' : palette.textFaint, fontSize: isLight ? 11 : 12, lineHeight: 1.2, fontWeight: isLight ? 500 : 400 }}>@ {date}</span>
           {results.length > 0 && (
             <span style={{
-              background: 'rgba(255,203,5,0.15)', border: '1px solid rgba(255,203,5,0.3)',
-              color: '#FFCB05', fontSize: 11, fontWeight: 700, padding: '1px 7px',
-              borderRadius: 10, letterSpacing: '0.05em',
+              background: isLight ? 'rgba(30,64,175,0.11)' : 'rgba(255,203,5,0.15)',
+              border: `1px solid ${isLight ? 'rgba(30,64,175,0.26)' : 'rgba(255,203,5,0.3)'}`,
+              color: palette.accent, fontSize: isLight ? 12 : 11, fontWeight: 700, padding: isLight ? '2px 8px' : '1px 7px',
+              borderRadius: 10, letterSpacing: '0.05em', lineHeight: 1.1,
             }}>{results.length}</span>
           )}
         </div>
         {results.length > 0 && (
-          <div style={{ display: 'flex', gap: 6 }}>
+          <div style={{ display: 'flex', gap: 5, position: 'relative', right: 40 }}>
             <button onClick={downloadCSV} style={{
-              background: 'rgba(0,230,118,0.1)', border: '1px solid rgba(0,230,118,0.25)',
-              color: '#00e676', padding: '3px 10px', borderRadius: 4, fontSize: 11,
-              cursor: 'pointer', ...mono,
+              background: isLight ? 'rgba(5,150,105,0.10)' : 'rgba(0,230,118,0.1)',
+              border: isLight ? '1px solid rgba(5,150,105,0.28)' : '1px solid rgba(0,230,118,0.25)',
+              color: isLight ? '#065f46' : '#00e676', padding: '2px 8px', borderRadius: 3, fontSize: 11,
+              cursor: 'pointer', ...resultFont,
             }}>📄 CSV</button>
             <button onClick={downloadExcel} style={{
-              background: 'rgba(0,212,255,0.1)', border: '1px solid rgba(0,212,255,0.25)',
-              color: '#00d4ff', padding: '3px 10px', borderRadius: 4, fontSize: 11,
-              cursor: 'pointer', ...mono,
+              background: isLight ? 'rgba(30,64,175,0.10)' : 'rgba(0,212,255,0.1)',
+              border: isLight ? '1px solid rgba(30,64,175,0.28)' : '1px solid rgba(0,212,255,0.25)',
+              color: isLight ? '#1e3a8a' : '#00d4ff', padding: '2px 8px', borderRadius: 3, fontSize: 11,
+              cursor: 'pointer', ...resultFont,
             }}>📊 XLS</button>
           </div>
         )}
       </div>
 
       {/* ── Filter bar ── */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
-        flexShrink: 0, borderBottom: '1px solid rgba(255,255,255,0.06)',
+      <div className="results-filter-bar" style={{
+        display: 'flex', alignItems: 'center', gap: isLight ? 8 : 8, padding: isLight ? '8px 12px' : '9px 12px',
+        flexShrink: 0, borderBottom: `1px solid ${palette.filterBorder}`,
+        background: isLight ? '#f8fbff' : undefined,
       }}>
         <CalendarWithButton
           value={date} onChange={setDate}
@@ -1471,18 +1704,20 @@ function ResultsView({ screeners, selectedScreener, setSelectedScreener }: { scr
           onTogglePicker={() => setShowCalendar(!showCalendar)}
           onSelectDate={(d) => { setDate(d); setShowCalendar(false); }}
         />
-        <select value={selectedScreener} onChange={e => setSelectedScreener(e.target.value)} style={{
-          flex: 1, background: '#0d1f35', border: '1px solid rgba(255,255,255,0.12)',
-          color: '#e2e8f0', borderRadius: 5, padding: '5px 8px', fontSize: 12, ...mono,
+        <select className="results-screener-select" value={selectedScreener} onChange={e => setSelectedScreener(e.target.value)} style={{
+          flex: 1, background: palette.selectBg, border: `1px solid ${palette.selectBorder}`,
+          color: palette.textMain, borderRadius: 5, padding: isLight ? '0 10px' : '6px 8px', height: isLight ? 30 : undefined, fontSize: isLight ? 11 : 13, ...resultFont,
         }}>
           <option value="" disabled>选择筛选器...</option>
-          {screeners.map(s => <option key={s.id} value={s.name}>{s.display_name}</option>)}
+          {screeners.map((s, idx) => <option key={`${String(s.id ?? 'na')}-${s.name}-${idx}`} value={s.name}>{s.display_name}</option>)}
         </select>
-        <button onClick={handleQuery} disabled={loading || !selectedScreener} style={{
-          background: loading ? 'rgba(255,203,5,0.3)' : '#FFCB05',
-          color: '#050d1a', border: 'none', borderRadius: 5,
-          padding: '5px 16px', fontSize: 12, fontWeight: 700,
-          cursor: loading ? 'not-allowed' : 'pointer', flexShrink: 0, ...mono,
+        <button className="results-query-btn" onClick={handleQuery} disabled={loading || !selectedScreener} style={{
+          background: loading
+            ? (isLight ? 'rgba(59,130,246,0.35)' : 'rgba(255,203,5,0.3)')
+            : (isLight ? '#3b82f6' : '#FFCB05'),
+          color: isLight ? '#ffffff' : '#050d1a', border: 'none', borderRadius: 6,
+          padding: isLight ? '0 11px' : '6px 16px', height: isLight ? 30 : undefined, fontSize: isLight ? 11 : 13, fontWeight: 700,
+          cursor: loading ? 'not-allowed' : 'pointer', flexShrink: 0, ...resultFont,
         }}>{loading ? '查询中...' : '查看结果'}</button>
       </div>
 
@@ -1497,7 +1732,7 @@ function ResultsView({ screeners, selectedScreener, setSelectedScreener }: { scr
       <div style={{ flex: 1, overflow: 'auto' }}>
         {!loading && results.length === 0 && !error && (
           <div style={{ padding: '40px 16px', textAlign: 'center',
-            color: 'rgba(255,255,255,0.25)', fontSize: 13 }}>
+            color: palette.textFaint, fontSize: 14 }}>
             无结果。选择日期并点击查看结果。
           </div>
         )}
@@ -1506,8 +1741,8 @@ function ResultsView({ screeners, selectedScreener, setSelectedScreener }: { scr
           <>
             <div style={{
               display: 'grid', gridTemplateColumns: '80px 1fr 90px 80px 52px 60px',
-              padding: '5px 12px', borderBottom: '1px solid rgba(255,255,255,0.08)',
-              color: 'rgba(255,255,255,0.35)', fontSize: 10, letterSpacing: '0.1em',
+              padding: '6px 12px', borderBottom: `1px solid ${palette.filterBorder}`,
+              color: palette.textDim, fontSize: 12, letterSpacing: '0.08em',
             }}>
               <span>STOCK</span><span>NAME</span>
               <span>行业</span>
@@ -1539,31 +1774,31 @@ function ResultsView({ screeners, selectedScreener, setSelectedScreener }: { scr
                     onClick={() => setSelectedStock(isSelected ? null : { code, name, row })}
                     style={{
                       display: 'grid', gridTemplateColumns: '80px 1fr 90px 80px 52px 60px',
-                      padding: '7px 12px', cursor: 'pointer',
-                      borderBottom: '1px solid rgba(255,255,255,0.05)',
-                      borderLeft: isSelected ? '2px solid #00d4ff' : '2px solid transparent',
-                      background: isSelected ? 'rgba(0,212,255,0.08)'
-                        : i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)',
+                      padding: '8px 12px', cursor: 'pointer',
+                      borderBottom: `1px solid ${palette.rowBorder}`,
+                      borderLeft: isSelected ? `2px solid ${isLight ? '#1e40af' : '#00d4ff'}` : '2px solid transparent',
+                      background: isSelected ? palette.selectedRow
+                        : i % 2 === 0 ? 'transparent' : palette.rowOdd,
                       transition: 'background 0.15s',
                     }}
-                    onMouseEnter={e => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
-                    onMouseLeave={e => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = i%2===0 ? 'transparent' : 'rgba(255,255,255,0.02)'; }}
+                    onMouseEnter={e => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = palette.rowHover; }}
+                    onMouseLeave={e => { if (!isSelected) (e.currentTarget as HTMLElement).style.background = i%2===0 ? 'transparent' : palette.rowOdd; }}
                   >
-                    <span style={{ color: '#00d4ff', fontSize: 12, fontWeight: 600, ...mono }}>{code}</span>
-                    <span style={{ color: '#e2e8f0', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
-                    <span style={{ color: 'rgba(255,203,5,0.55)', fontSize: 10, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', ...mono }}>
+                    <span style={{ color: isLight ? '#1d4ed8' : '#00d4ff', fontSize: 13, fontWeight: 700, ...mono }}>{code}</span>
+                    <span style={{ color: palette.textMain, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+                    <span style={{ color: isLight ? '#92400e' : 'rgba(255,203,5,0.55)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', ...mono }}>
                       {f['extra_data.industry'] ?? f['industry'] ?? '–'}
                     </span>
-                    <span style={{ color: 'rgba(255,255,255,0.65)', fontSize: 11, textAlign: 'right', ...mono }}>{fmtCapShort(cap)}</span>
-                    <span style={{ color: 'rgba(255,255,255,0.65)', fontSize: 11, textAlign: 'right', ...mono }}>
+                    <span style={{ color: palette.textDim, fontSize: 13, textAlign: 'right', ...mono }}>{fmtCapShort(cap)}</span>
+                    <span style={{ color: palette.textDim, fontSize: 13, textAlign: 'right', ...mono }}>
                       {pe != null && !isNaN(Number(pe)) ? Number(pe).toFixed(1) : '–'}
                     </span>
                     <span style={{
-                      fontSize: 11, textAlign: 'right', fontWeight: 600, ...mono,
-                      color: pct == null ? 'rgba(255,255,255,0.4)'
+                      fontSize: 13, textAlign: 'right', fontWeight: 600, ...mono,
+                      color: pct == null ? palette.textFaint
                         : Number(pct) > 0 ? '#00e676'
                         : Number(pct) < 0 ? '#ff4757'
-                        : 'rgba(255,255,255,0.4)',
+                        : palette.textFaint,
                     }}>
                       {pct != null ? (Number(pct) > 0 ? '+' : '') + Number(pct).toFixed(2) + '%' : '–'}
                     </span>
@@ -1574,13 +1809,14 @@ function ResultsView({ screeners, selectedScreener, setSelectedScreener }: { scr
                       stock={{ code: selectedStock.code, name: selectedStock.name }}
                       rowData={selectedStock.row}
                       onClose={() => setSelectedStock(null)}
+                      theme={theme}
                     />
                   )}
                 </div>
               );
             })}
 
-            <div style={{ padding: '8px 12px', color: 'rgba(255,255,255,0.25)', fontSize: 11 }}>
+            <div style={{ padding: '8px 12px', color: palette.textFaint, fontSize: 13 }}>
               {results.length} stocks matched
             </div>
           </>
@@ -1591,32 +1827,32 @@ function ResultsView({ screeners, selectedScreener, setSelectedScreener }: { scr
       <div style={{
         flexShrink: 0,
         height: 28,
-        borderTop: '1px solid rgba(255,203,5,0.12)',
-        background: '#050d1a',
+        borderTop: `1px solid ${palette.headerBorder}`,
+        background: palette.bottomBg,
         display: 'flex',
         alignItems: 'center',
         padding: '0 16px',
         gap: 12,
-        fontSize: 10,
-        color: 'rgba(255,255,255,0.35)',
+        fontSize: 12,
+        color: palette.textFaint,
         letterSpacing: '0.08em',
         fontFamily: "'SF Mono','Courier New',monospace",
       }}>
         {results.length > 0 ? (
           <>
-            <span style={{ color: '#FFCB05', fontWeight: 700 }}>MATCHED</span>
-            <span style={{ color: 'rgba(255,255,255,0.7)' }}>{results.length}</span>
+            <span style={{ color: palette.accent, fontWeight: 700 }}>MATCHED</span>
+            <span style={{ color: palette.textDim }}>{results.length}</span>
             <span style={{ opacity: 0.3 }}>·</span>
-            <span style={{ color: '#FFCB05', fontWeight: 700 }}>SCREENER</span>
-            <span style={{ color: 'rgba(255,255,255,0.7)', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</span>
+            <span style={{ color: palette.accent, fontWeight: 700 }}>SCREENER</span>
+            <span style={{ color: isLight ? '#0f172a' : palette.textDim, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</span>
             <span style={{ opacity: 0.3 }}>·</span>
-            <span style={{ color: '#FFCB05', fontWeight: 700 }}>DATE</span>
-            <span style={{ color: 'rgba(255,255,255,0.7)' }}>{date}</span>
+            <span style={{ color: palette.accent, fontWeight: 700 }}>DATE</span>
+            <span style={{ color: isLight ? '#334155' : palette.textDim }}>{date}</span>
             {selectedStock && (
               <>
                 <span style={{ opacity: 0.3 }}>·</span>
-                <span style={{ color: '#FFCB05', fontWeight: 700 }}>SEL</span>
-                <span style={{ color: 'rgba(255,255,255,0.7)' }}>{selectedStock.code} {selectedStock.name}</span>
+                <span style={{ color: palette.accent, fontWeight: 700 }}>SEL</span>
+                <span style={{ color: palette.textDim }}>{selectedStock.code} {selectedStock.name}</span>
               </>
             )}
           </>
@@ -2059,13 +2295,13 @@ function StrategyView() {
 
       {/* Trade Detail Modal */}
       {selectedBacktest && (
-        <div className="modal-overlay" onClick={() => setSelectedBacktest(null)}>
-          <div className="modal modal-wide" onClick={e => e.stopPropagation()} style={{ maxWidth: '900px' }}>
-            <div className="modal-header" style={{ background: '#00274C', color: 'white' }}>
+        <div className="neo-modal-overlay" onClick={() => setSelectedBacktest(null)}>
+          <div className="neo-modal neo-modal-wide" onClick={e => e.stopPropagation()} style={{ maxWidth: '900px' }}>
+            <div className="neo-modal-header" style={{ background: '#00274C', color: 'white' }}>
               <h3>🔬 {selectedBacktest.strategy_version} ANALYSIS</h3>
-              <button className="modal-close" onClick={() => setSelectedBacktest(null)} style={{ color: 'white' }}>×</button>
+              <button className="neo-modal-close" onClick={() => setSelectedBacktest(null)} style={{ color: 'white' }}>×</button>
             </div>
-            <div className="modal-body">
+            <div className="neo-modal-body">
               {loadingTrades ? (
                 <div style={{ padding: '40px', textAlign: 'center' }}>LOADING TRADE DATA...</div>
               ) : (
@@ -2306,8 +2542,8 @@ function DataHealthInline() {
             width:9, height:9, borderRadius:'50%',
             background:sColor, boxShadow:`0 0 8px ${sColor}`, flexShrink:0,
           }} />
-          <span style={{ color:'#FFCB05', fontWeight:700, fontSize:14, letterSpacing:'0.15em' }}>DATA HEALTH</span>
-          <span style={{ color:'rgba(255,255,255,0.70)', fontSize:12 }}>CHECKED {lastCheck}</span>
+          <span className="dh-header-title">DATA HEALTH</span>
+          <span className="dh-header-checked">CHECKED {lastCheck}</span>
         </div>
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
           {dbStatus !== 'unknown' && (
@@ -2336,7 +2572,7 @@ function DataHealthInline() {
           </button>
           <label style={{
             display:'flex', alignItems:'center', gap:'6px', fontSize:11,
-            color:'#888', cursor:'pointer', userSelect:'none'
+            color:'inherit', cursor:'pointer', userSelect:'none'
           }} title="勾选后，Excel 中的数据将完全覆盖数据库记录（Excel 中没有的字段将被清空）。不勾选则只更新 Excel 中有值的字段，保留数据库中已有数据。">
             <input
               type="checkbox"
@@ -2420,7 +2656,7 @@ function DataHealthInline() {
         <div className="dh-dl-title">DOWNLOADS</div>
         <div className="dh-dl-list">
           {rh.length === 0 && (
-            <span style={{ color:'rgba(255,255,255,0.35)', fontSize:12 }}>暂无记录</span>
+            <span className="dh-empty-note">暂无记录</span>
           )}
           {rh.slice(0, 6).map((r: any, i: number) => {
             const { icon, color, label } = outcomeInfo(r);

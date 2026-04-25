@@ -1,0 +1,11 @@
+{
+  "flow_id": "five_flags_dag_v1",
+  "description": "DAG flow for five-flags screening (topological execution)",
+  "nodes": [
+    {"id": "er_ban_hui_tiao", "depends_on": []},
+    {"id": "shi_pan_xian", "depends_on": []},
+    {"id": "zhang_ting_bei_liang_yin", "depends_on": ["er_ban_hui_tiao"]},
+    {"id": "jin_feng_huang", "depends_on": ["zhang_ting_bei_liang_yin"]},
+    {"id": "yin_feng_huang", "depends_on": ["shi_pan_xian", "zhang_ting_bei_liang_yin"]}
+  ]
+}

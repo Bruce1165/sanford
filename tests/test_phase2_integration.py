@@ -8,8 +8,10 @@ import pytest
 import sqlite3
 import os
 import tempfile
+import sys
 
 # Add database path
+sys.path.insert(0, 'scripts')
 sys.path.insert(0, 'scripts/database')
 
 from database.lao_ya_tou_pool import LaoYaTouPoolRepository
@@ -26,9 +28,8 @@ def temp_db():
     fd, path = tempfile.mkstemp(suffix='.db')
     os.close(fd)
 
-    # Get migrations directory - use absolute path
     test_dir = os.path.dirname(__file__)
-    migrations_dir = os.path.join(test_dir, 'scripts', 'database', 'migrations')
+    migrations_dir = os.path.join(test_dir, '..', 'scripts', 'database', 'migrations')
 
     # Execute lao_ya_tou_pool migration
     conn = sqlite3.connect(path)
@@ -38,6 +39,7 @@ def temp_db():
     conn.close()
 
     # Execute lao_ya_tou_five_flags migration
+    conn = sqlite3.connect(path)
     lao_ya_tou_five_flags_script = os.path.join(migrations_dir, 'create_lao_ya_tou_five_flags.sql')
     with open(lao_ya_tou_five_flags_script, 'r') as f:
         conn.executescript(f.read())

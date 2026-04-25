@@ -40,6 +40,36 @@
       "max": 3.0,
       "step": 0.1,
       "default": 2.0
+    },
+    "MIN_SIGNAL_ONE_DAYS": {
+      "value": 3,
+      "display_name": "信号一最小天数",
+      "description": "判定信号一至少需要的历史数据天数",
+      "group": "基础设置",
+      "type": "int",
+      "min": 3,
+      "max": 30,
+      "default": 3
+    },
+    "MIN_HISTORY_DAYS": {
+      "value": 10,
+      "display_name": "最小历史天数",
+      "description": "单股筛选前要求的最少历史数据天数",
+      "group": "基础设置",
+      "type": "int",
+      "min": 1,
+      "max": 120,
+      "default": 10
+    },
+    "HISTORY_BUFFER_DAYS": {
+      "value": 10,
+      "display_name": "历史缓冲天数",
+      "description": "加载数据时在时间范围基础上额外增加的缓冲天数",
+      "group": "基础设置",
+      "type": "int",
+      "min": 0,
+      "max": 120,
+      "default": 10
     }
   }
 }

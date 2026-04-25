@@ -26,6 +26,7 @@ logs/
 *.tmp
 *.temp
 *.bak
+tmp/
 
 # 环境
 .env
@@ -44,6 +45,8 @@ frontend/dist/
 # 备份文件 - 不要提交
 *.bak
 *.backup
+*.bak.*
+*.backup.*
 
 # TECHNICAL_DOCS 排除大型归档
 TECHNICAL_DOCS/ARCHIVES/

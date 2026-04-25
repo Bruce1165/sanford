@@ -17,8 +17,8 @@
 
 ### 认证配置
 - **环境变量**: `DASHBOARD_PASSWORD`
-- **当前密码**: `NeoTrade2025`
-- **设置命令**: `export DASHBOARD_PASSWORD="NeoTrade2025"`
+- **当前密码**: `NeoTrade123`
+- **设置命令**: `export DASHBOARD_PASSWORD="NeoTrade123"`
 - **本地访问**: 跳过认证（127.0.0.1, localhost, 192.168.x.x, 10.x.x.x, 172.16-31.x.x）
 - **外部访问**: 需要 Basic Auth 认证
 
@@ -104,7 +104,7 @@
 ### 完整启动流程
 ```bash
 # 1. 设置环境变量
-export DASHBOARD_PASSWORD="NeoTrade2025"
+export DASHBOARD_PASSWORD="NeoTrade123"
 
 # 2. 启动Flask后端
 cd backend
@@ -209,7 +209,7 @@ sqlite3 data/dashboard.db "SELECT * FROM screener_config_history WHERE screener_
 ## 重要提醒
 
 1. **每次修改代码后必须重启服务**才能生效
-2. **外部访问需要密码**：`NeoTrade2025`
+2. **外部访问需要密码**：`NeoTrade123`
 3. **本地开发不需要密码**（localhost访问）
 4. **配置文件修改会自动备份到历史表**
 5. **端口冲突**：如果8765被占用，使用其他端口但要同步更新vite.config.ts

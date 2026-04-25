@@ -6,6 +6,7 @@ DROP TABLE IF EXISTS lao_ya_tou_five_flags;
 CREATE TABLE lao_ya_tou_five_flags (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     pool_id INTEGER NOT NULL,
+    snapshot_id TEXT NOT NULL DEFAULT 'legacy',
     screener_id TEXT NOT NULL,
     stock_code TEXT NOT NULL,
     stock_name TEXT NOT NULL,
@@ -18,6 +19,7 @@ CREATE TABLE lao_ya_tou_five_flags (
 );
 
 CREATE INDEX idx_five_flags_pool ON lao_ya_tou_five_flags(pool_id);
+CREATE INDEX idx_five_flags_snapshot ON lao_ya_tou_five_flags(snapshot_id);
 CREATE INDEX idx_five_flags_screener ON lao_ya_tou_five_flags(screener_id);
 CREATE INDEX idx_five_flags_code ON lao_ya_tou_five_flags(stock_code);
 CREATE INDEX idx_five_flags_date ON lao_ya_tou_five_flags(screen_date);

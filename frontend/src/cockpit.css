@@ -152,16 +152,20 @@ label { color: var(--neo-text-mid) !important; }
 
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width:5px; height:5px; }
-::-webkit-scrollbar-track { background:var(--neo-bg); }
+::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background:rgba(255,203,5,0.18); border-radius:3px; }
 ::-webkit-scrollbar-thumb:hover { background:rgba(255,203,5,0.38); }
 
 /* ── Modal ── */
-[class*="modal"],[class*="overlay"] {
+/* Limit scope to app-owned modal classes to avoid affecting external element picker overlays. */
+.neo-app .neo-modal-overlay,
+.neo-app .config-modal-overlay,
+.neo-app .neo-modal {
   background: rgba(5,13,26,0.88) !important;
   backdrop-filter: blur(12px) !important;
 }
-[class*="modal-content"],[class*="modal-body"] {
+.neo-app .neo-modal-content,
+.neo-app .neo-modal-body {
   background: var(--neo-surface) !important;
   border: 1px solid var(--neo-border) !important;
   color: var(--neo-text) !important;
@@ -211,6 +215,18 @@ label { color: var(--neo-text-mid) !important; }
   padding: 10px 18px;
   background: linear-gradient(90deg,#020d1e,#00274C);
   border-bottom: 1px solid rgba(255,203,5,0.14);
+}
+
+.dh-header-title {
+  color: #FFCB05;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+}
+
+.dh-header-checked {
+  color: rgba(255,255,255,0.70);
+  font-size: 12px;
 }
 
 /* Trigger button */
@@ -307,6 +323,11 @@ label { color: var(--neo-text-mid) !important; }
   display: flex;
   flex-direction: column;
   gap: 5px;
+}
+
+.dh-empty-note {
+  color: rgba(255,255,255,0.35);
+  font-size: 12px;
 }
 .dh-dl-row {
   display: flex;
@@ -499,12 +520,12 @@ label { color: var(--neo-text-mid) !important; }
   cursor: pointer;
 }
 .sl-check-btn {
-  padding: 5px 12px;
+  padding: 4px 10px;
   background: #F59E0B;
   border: none;
   border-radius: 5px;
   color: #000;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   cursor: pointer;
   font-family: 'SF Mono','Courier New',monospace;
@@ -614,7 +635,7 @@ label { color: var(--neo-text-mid) !important; }
   text-overflow: ellipsis;
   white-space: nowrap;
   overflow-y: auto;
-  padding: 6px 10px;
+  padding: 8px 10px;
 }
 .sl-list::-webkit-scrollbar { width: 3px; }
 .sl-list::-webkit-scrollbar-thumb { background: rgba(255,203,5,0.15); border-radius: 2px; }
@@ -631,8 +652,8 @@ label { color: var(--neo-text-mid) !important; }
   background: #141720;
   border: 1px solid rgba(255,255,255,0.06);
   border-radius: 7px;
-  padding: 9px 11px;
-  margin-bottom: 6px;
+  padding: 12px 11px;
+  margin-bottom: 8px;
   transition: border-color 0.15s, background 0.15s;
 }
 .sl-card:hover {
@@ -646,7 +667,7 @@ label { color: var(--neo-text-mid) !important; }
   white-space: nowrap; min-width: 0; }
 .sl-card-name {
   color: rgba(255,255,255,0.92);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -654,8 +675,8 @@ label { color: var(--neo-text-mid) !important; }
   margin-bottom: 3px;
 }
 .sl-card-desc {
-  color: rgba(255,255,255,0.38);
-  font-size: 10px;
+  color: rgba(255,255,255,0.50);
+  font-size: 11px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -717,7 +738,7 @@ label { color: var(--neo-text-mid) !important; }
 /* RUN button */
 .sl-run-btn {
   padding: 5px 11px;
-  background: #16A34A;
+  background: #15803D;
   border: none;
   border-radius: 5px;
   color: #fff;
@@ -744,8 +765,8 @@ label { color: var(--neo-text-mid) !important; }
   transition: opacity 0.15s ease;
 }
 .sl-run-btn:hover {
-  background: #22C55E;
-  box-shadow: 0 0 12px rgba(34,197,94,0.3);
+  background: #16A34A;
+  box-shadow: 0 0 10px rgba(34,197,94,0.24);
   transform: translateY(-1px);
 }
 .sl-run-btn:hover::before {
@@ -881,4 +902,772 @@ label { color: var(--neo-text-mid) !important; }
 .config-modal-body textarea:focus {
   border-color: #3b82f6 !important;
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1) !important;
+}
+
+/* ═══════════════════════════════════════════════
+   LIGHT THEME OVERRIDES (Dashboard)
+   ═══════════════════════════════════════════════ */
+.neo-app.neo-theme-light {
+  color: #0f172a;
+}
+
+.neo-app.neo-theme-light th {
+  background: #eef4ff !important;
+  color: #1e3a8a !important;
+  border-bottom: 1px solid rgba(30, 64, 175, 0.2) !important;
+}
+
+.neo-app.neo-theme-light td {
+  border-bottom: 1px solid rgba(148, 163, 184, 0.28) !important;
+  color: #0f172a !important;
+}
+
+.neo-app.neo-theme-light tr:hover td {
+  background: #f8fbff !important;
+}
+
+.neo-app.neo-theme-light table {
+  color: #0f172a !important;
+}
+
+.neo-app.neo-theme-light .neo-live-btn:hover {
+  background: rgba(30, 64, 175, 0.12) !important;
+  border-color: rgba(30, 64, 175, 0.4) !important;
+}
+
+.neo-app.neo-theme-light .dh-wrap {
+  background: #ffffff;
+  border-color: rgba(30, 64, 175, 0.18);
+}
+
+.neo-app.neo-theme-light .dh-header {
+  background: linear-gradient(90deg, #eff6ff, #dbeafe);
+  border-bottom-color: rgba(30, 64, 175, 0.14);
+}
+
+.neo-app.neo-theme-light .dh-header-title {
+  color: #1e40af;
+}
+
+.neo-app.neo-theme-light .dh-header-checked {
+  color: #475569;
+}
+
+.neo-app.neo-theme-light .dh-btn {
+  background: rgba(37, 99, 235, 0.12);
+  border-color: rgba(37, 99, 235, 0.28);
+  color: #1d4ed8;
+}
+
+.neo-app.neo-theme-light .dh-btn:hover {
+  background: rgba(37, 99, 235, 0.18);
+  box-shadow: 0 0 10px rgba(37, 99, 235, 0.14);
+}
+
+.neo-app.neo-theme-light .dh-grid {
+  border-bottom-color: rgba(30, 64, 175, 0.1);
+}
+
+.neo-app.neo-theme-light .dh-panel {
+  border-bottom-color: rgba(30, 64, 175, 0.08);
+}
+
+.neo-app.neo-theme-light .dh-panel-title {
+  color: #334155;
+  border-bottom-color: rgba(30, 64, 175, 0.1);
+}
+
+.neo-app.neo-theme-light .dh-lbl {
+  color: #334155;
+}
+
+.neo-app.neo-theme-light .dh-val-dim {
+  color: #1e293b;
+}
+
+.neo-app.neo-theme-light .dh-downloads {
+  background: #f8fbff;
+}
+
+.neo-app.neo-theme-light .dh-dl-title {
+  color: #64748b;
+}
+
+.neo-app.neo-theme-light .dh-dl-row {
+  background: rgba(15, 23, 42, 0.03);
+}
+
+.neo-app.neo-theme-light .dh-dl-row:hover {
+  background: rgba(30, 64, 175, 0.08);
+}
+
+.neo-app.neo-theme-light .dh-dl-time {
+  color: #334155;
+}
+
+.neo-app.neo-theme-light .dh-dl-elapsed {
+  color: #64748b;
+}
+
+.neo-app.neo-theme-light .dh-empty-note {
+  color: #64748b;
+}
+
+.neo-app.neo-theme-light .config-modal-overlay {
+  background: rgba(15, 23, 42, 0.24);
+}
+
+.neo-app.neo-theme-light .config-modal-container {
+  box-shadow: 0 25px 50px -12px rgba(15, 23, 42, 0.2);
+}
+
+.neo-app.neo-theme-light .sl-wrap {
+  background: #f3f7ff;
+}
+
+.neo-app.neo-theme-light .sl-header,
+.neo-app.neo-theme-light .sl-check-section,
+.neo-app.neo-theme-light .sl-footer {
+  border-color: rgba(30, 64, 175, 0.15);
+}
+
+.neo-app.neo-theme-light .sl-header {
+  background: #edf3ff;
+}
+
+.neo-app.neo-theme-light .sl-check-section {
+  background: #f5f8ff;
+}
+
+.neo-app.neo-theme-light .sl-list {
+  background: #f8fbff;
+}
+
+.neo-app.neo-theme-light .sl-title,
+.neo-app.neo-theme-light .sl-badge {
+  color: #1e40af;
+}
+
+.neo-app.neo-theme-light .sl-badge {
+  background: rgba(30, 64, 175, 0.12);
+}
+
+.neo-app.neo-theme-light .sl-tab {
+  color: #334155;
+  border-color: rgba(30, 64, 175, 0.18);
+  background: rgba(255,255,255,0.55);
+}
+
+.neo-app.neo-theme-light .sl-tab:hover {
+  color: #1e40af;
+  border-color: rgba(30, 64, 175, 0.35);
+  background: rgba(239, 246, 255, 0.95);
+}
+
+.neo-app.neo-theme-light .sl-tab.active {
+  background: rgba(30, 64, 175, 0.12);
+  border-color: #1d4ed8;
+  color: #0f172a;
+  box-shadow: 0 0 0 1px rgba(30, 64, 175, 0.08);
+}
+
+.neo-app.neo-theme-light .sl-check-label,
+.neo-app.neo-theme-light .sl-card-desc,
+.neo-app.neo-theme-light .sl-empty,
+.neo-app.neo-theme-light .sl-loading,
+.neo-app.neo-theme-light .sl-footer-btn {
+  color: #475569;
+}
+
+.neo-app.neo-theme-light .sl-check-input,
+.neo-app.neo-theme-light .sl-check-select {
+  background: #ffffff;
+  border-color: #bfccde;
+  color: #0f172a;
+}
+
+.neo-app.neo-theme-light .sl-check-input:focus,
+.neo-app.neo-theme-light .sl-check-select:focus {
+  border-color: #60a5fa !important;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.12) !important;
+}
+
+.neo-app.neo-theme-light .sl-check-input::placeholder {
+  color: #94a3b8;
+}
+
+.neo-app.neo-theme-light .sl-card,
+.neo-app.neo-theme-light .sl-check-result {
+  background: #fdfefe !important;
+  border-color: #d2deee !important;
+}
+
+.neo-app.neo-theme-light .sl-card:hover {
+  border-color: rgba(30, 64, 175, 0.35) !important;
+  background: #f2f7ff !important;
+}
+
+.neo-app.neo-theme-light .sl-card-name,
+.neo-app.neo-theme-light .sl-check-stock-name {
+  color: #0f172a;
+}
+
+.neo-app.neo-theme-light .sl-card {
+  box-shadow: 0 2px 10px rgba(30, 64, 175, 0.08);
+}
+
+.neo-app.neo-theme-light .sl-card-left {
+  background: transparent !important;
+}
+
+.neo-app.neo-theme-light .sl-card-name {
+  background: transparent !important;
+  color: #0f172a !important;
+  text-shadow: none !important;
+}
+
+.neo-app.neo-theme-light .sl-card-desc {
+  background: transparent !important;
+  color: #334155 !important;
+  text-shadow: none !important;
+}
+
+.neo-app.neo-theme-light .sl-check-rule {
+  color: #334155;
+}
+
+.neo-app.neo-theme-light .sl-list {
+  background: #f8fbff !important;
+}
+
+.neo-app.neo-theme-light .sl-config-btn {
+  background: #f8fbff;
+  border-color: #c6d5ee;
+  color: #334155;
+}
+
+.neo-app.neo-theme-light .sl-config-btn:hover {
+  background: #eef4ff;
+  border-color: #9fb4d8;
+  color: #1e3a8a;
+}
+
+.neo-app.neo-theme-light .sl-run-btn {
+  background: #1d4ed8;
+  color: #ffffff;
+  border: 1px solid #1e40af;
+  border-radius: 6px;
+}
+
+.neo-app.neo-theme-light .sl-run-btn:hover {
+  background: #1e40af;
+  box-shadow: 0 0 10px rgba(30, 64, 175, 0.22);
+}
+
+.neo-app.neo-theme-light .sl-check-btn {
+  background: #2563eb;
+  color: #ffffff;
+  border: 1px solid #1e40af;
+  border-radius: 6px;
+}
+
+.neo-app.neo-theme-light .sl-check-btn:hover {
+  background: #1d4ed8;
+  box-shadow: 0 0 10px rgba(37, 99, 235, 0.2);
+}
+
+.neo-app.neo-theme-light .sl-check-btn:disabled,
+.neo-app.neo-theme-light .sl-check-btn:disabled:hover {
+  background: #dbeafe;
+  border-color: #bfdbfe;
+  color: #64748b;
+  box-shadow: none;
+}
+
+.neo-app.neo-theme-light .sl-run-btn:disabled,
+.neo-app.neo-theme-light .sl-run-btn:disabled:hover {
+  background: #dbeafe;
+  border-color: #bfdbfe;
+  color: #64748b;
+  box-shadow: none;
+}
+
+.neo-app.neo-theme-light input:not([type='checkbox']):not([type='radio']),
+.neo-app.neo-theme-light select,
+.neo-app.neo-theme-light textarea {
+  background: #ffffff !important;
+  border-color: #bfccde !important;
+  color: #0f172a !important;
+}
+
+.neo-app.neo-theme-light input:not([type='checkbox']):not([type='radio'])::placeholder,
+.neo-app.neo-theme-light textarea::placeholder {
+  color: #94a3b8 !important;
+}
+
+.neo-app.neo-theme-light select option {
+  background: #ffffff;
+  color: #0f172a;
+}
+
+.neo-app.neo-theme-light input:not([type='checkbox']):not([type='radio']):focus,
+.neo-app.neo-theme-light select:focus,
+.neo-app.neo-theme-light textarea:focus {
+  border-color: #3b82f6 !important;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15) !important;
+}
+
+/* LIGHT mode refinement: flat UI + alignment consistency */
+.neo-app .sl-tabs {
+  align-items: center;
+  min-height: 38px;
+}
+
+.neo-app .sl-tab {
+  min-height: 24px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.neo-app .sl-check-row {
+  gap: 6px;
+  min-height: 30px;
+}
+
+.neo-app .sl-check-input,
+.neo-app .sl-check-select {
+  height: 30px;
+  margin-bottom: 0;
+  line-height: 1.2;
+}
+
+.neo-app .sl-check-btn {
+  height: 30px;
+  min-width: 68px;
+  margin-left: 0;
+  margin-right: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.neo-app .sl-card {
+  min-height: 52px;
+}
+
+.neo-app .sl-card-right {
+  align-items: center;
+}
+
+.neo-app .sl-config-btn,
+.neo-app .sl-run-btn {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.neo-app .sl-run-btn {
+  min-width: 56px;
+}
+
+.neo-app .sl-footer {
+  min-height: 36px;
+  align-items: center;
+}
+
+.neo-app .sl-footer-btn {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.neo-app.neo-theme-light .sl-wrap {
+  background: #f6f9ff;
+}
+
+.neo-app.neo-theme-light .sl-header,
+.neo-app.neo-theme-light .sl-tabs,
+.neo-app.neo-theme-light .sl-check-section,
+.neo-app.neo-theme-light .sl-list,
+.neo-app.neo-theme-light .sl-footer {
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+.neo-app.neo-theme-light .sl-header {
+  background: #eef4ff;
+}
+
+.neo-app.neo-theme-light .sl-check-section {
+  background: #f8fbff;
+}
+
+.neo-app.neo-theme-light .sl-list {
+  background: #ffffff !important;
+}
+
+.neo-app.neo-theme-light .sl-tab {
+  background: #ffffff;
+  border-color: #cfd9eb;
+  color: #334155;
+}
+
+.neo-app.neo-theme-light .sl-tab::before {
+  display: none;
+}
+
+.neo-app.neo-theme-light .sl-tab:hover {
+  background: #f3f7ff;
+  border-color: #9fb4d8;
+}
+
+.neo-app.neo-theme-light .sl-tab.active {
+  background: #e9f1ff;
+  border-color: #5b7fc0;
+  color: #1e3a8a;
+  box-shadow: none;
+}
+
+.neo-app.neo-theme-light .sl-check-label,
+.neo-app.neo-theme-light .sl-card-desc,
+.neo-app.neo-theme-light .sl-empty,
+.neo-app.neo-theme-light .sl-loading,
+.neo-app.neo-theme-light .sl-footer-btn {
+  color: #334155;
+}
+
+.neo-app.neo-theme-light .sl-check-input,
+.neo-app.neo-theme-light .sl-check-select {
+  background: #ffffff;
+  border-color: #b8c7df;
+  color: #0f172a;
+  box-shadow: none;
+}
+
+.neo-app.neo-theme-light .sl-check-input::placeholder {
+  color: #64748b;
+}
+
+.neo-app.neo-theme-light .sl-card,
+.neo-app.neo-theme-light .sl-check-result {
+  background: #ffffff !important;
+  border: 1px solid #d1dced !important;
+  box-shadow: none !important;
+}
+
+.neo-app.neo-theme-light .sl-card:hover {
+  background: #f7faff !important;
+  border-color: #9fb4d8 !important;
+  transform: none !important;
+}
+
+.neo-app.neo-theme-light .sl-card-name,
+.neo-app.neo-theme-light .sl-check-stock-name,
+.neo-app.neo-theme-light .sl-check-rule {
+  color: #0f172a !important;
+}
+
+.neo-app.neo-theme-light .sl-config-btn {
+  background: #ffffff;
+  border-color: #b8c7df;
+  color: #1e3a8a;
+  box-shadow: none;
+}
+
+.neo-app.neo-theme-light .sl-config-btn::before,
+.neo-app.neo-theme-light .sl-run-btn::before,
+.neo-app.neo-theme-light .sl-check-btn::before {
+  display: none;
+}
+
+.neo-app.neo-theme-light .sl-config-btn:hover {
+  background: #eef4ff;
+  border-color: #8ea8d0;
+  box-shadow: none;
+  transform: none;
+}
+
+.neo-app.neo-theme-light .sl-run-btn {
+  background: #2563eb;
+  border: 1px solid #1d4ed8;
+  box-shadow: none;
+}
+
+.neo-app.neo-theme-light .sl-run-btn:hover {
+  background: #1d4ed8;
+  border-color: #1e40af;
+  box-shadow: none;
+  transform: none;
+}
+
+.neo-app.neo-theme-light .sl-check-btn {
+  background: #2563eb;
+  border: 1px solid #1d4ed8;
+  color: #ffffff;
+  box-shadow: none;
+}
+
+.neo-app.neo-theme-light .sl-check-btn:hover {
+  background: #1d4ed8;
+  border-color: #1e40af;
+  box-shadow: none;
+  transform: none;
+}
+
+.neo-app.neo-theme-light .sl-check-btn:disabled,
+.neo-app.neo-theme-light .sl-check-btn:disabled:hover,
+.neo-app.neo-theme-light .sl-run-btn:disabled,
+.neo-app.neo-theme-light .sl-run-btn:disabled:hover {
+  background: #dbe7fb;
+  border-color: #c4d5f2;
+  color: #64748b;
+}
+
+.neo-app.neo-theme-light .sl-footer {
+  background: #f8fbff;
+}
+
+.neo-app.neo-theme-light .sl-footer-btn:hover {
+  background: #edf3ff;
+  color: #1e3a8a;
+}
+
+/* Final LIGHT alignment/typography pass (left panel) */
+.neo-app.neo-theme-light .sl-wrap {
+  font-family: 'SF Mono','Courier New',monospace !important;
+}
+
+.neo-app.neo-theme-light .sl-header {
+  height: 44px;
+  padding: 0 10px;
+  box-shadow: none !important;
+}
+
+.neo-app.neo-theme-light .sl-title {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+}
+
+.neo-app.neo-theme-light .sl-tabs {
+  min-height: 40px;
+  padding: 8px 8px 6px;
+  gap: 6px;
+}
+
+.neo-app.neo-theme-light .sl-tab {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.neo-app.neo-theme-light .sl-check-section {
+  padding: 8px;
+}
+
+.neo-app.neo-theme-light .sl-check-label {
+  margin-bottom: 7px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.neo-app.neo-theme-light .sl-check-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.neo-app.neo-theme-light .sl-check-row-with-calendar {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.neo-app.neo-theme-light .sl-check-row-with-calendar .sl-check-input-with-calendar {
+  flex: 0 0 46%;
+  max-width: 46%;
+  min-width: 88px;
+}
+
+.neo-app.neo-theme-light .sl-check-row-with-calendar .wsj-input {
+  width: 104px !important;
+  min-width: 104px;
+  margin-bottom: 0 !important;
+}
+
+.neo-app.neo-theme-light .sl-check-row-with-calendar .calendar-toggle {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  margin-left: 0;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.neo-app.neo-theme-light .sl-check-input,
+.neo-app.neo-theme-light .sl-check-select,
+.neo-app.neo-theme-light .sl-check-btn {
+  height: 28px;
+}
+
+.neo-app.neo-theme-light .sl-check-input,
+.neo-app.neo-theme-light .sl-check-select {
+  font-size: 11px;
+}
+
+.neo-app.neo-theme-light .sl-check-btn {
+  min-width: 68px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.neo-app.neo-theme-light .sl-list {
+  padding: 8px;
+}
+
+.neo-app.neo-theme-light .sl-card {
+  min-height: 56px;
+  padding: 8px 8px;
+  margin-bottom: 8px;
+  gap: 8px;
+  box-shadow: none !important;
+}
+
+.neo-app.neo-theme-light .sl-card-left,
+.neo-app.neo-theme-light .sl-card-name,
+.neo-app.neo-theme-light .sl-card-desc {
+  background: none !important;
+  background-image: none !important;
+  border: none !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+.neo-app.neo-theme-light .sl-card-name {
+  margin-bottom: 4px;
+  font-size: 11px !important;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.neo-app.neo-theme-light .sl-card-desc {
+  font-size: 10px !important;
+  line-height: 1.2;
+  color: #334155 !important;
+}
+
+.neo-app.neo-theme-light .sl-card-right {
+  gap: 6px;
+  align-items: center;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+.neo-app.neo-theme-light .sl-config-btn,
+.neo-app.neo-theme-light .sl-run-btn,
+.neo-app.neo-theme-light .sl-check-btn {
+  height: 26px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  border-radius: 4px;
+  box-shadow: none !important;
+  transform: none !important;
+  background-image: none !important;
+  filter: none !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  transition: none !important;
+  position: static !important;
+  overflow: visible !important;
+  outline: none !important;
+}
+
+.neo-app.neo-theme-light .sl-config-btn {
+  min-width: 30px;
+  width: 30px;
+  padding: 0;
+  font-size: 10px;
+  background: #f8fbff !important;
+  border: 1px solid #cfe0ff !important;
+  color: #3b82f6 !important;
+}
+
+.neo-app.neo-theme-light .sl-run-btn {
+  min-width: 52px;
+  padding: 0 9px;
+  background: #60a5fa !important;
+  border: 1px solid #93c5fd !important;
+  font-size: 10px !important;
+  color: #ffffff !important;
+}
+
+.neo-app.neo-theme-light .sl-check-btn {
+  background: #60a5fa !important;
+  border: 1px solid #93c5fd !important;
+  font-size: 11px !important;
+  color: #ffffff !important;
+}
+
+.neo-app.neo-theme-light .dh-val-cyan,
+.neo-app.neo-theme-light .dh-val-maize,
+.neo-app.neo-theme-light .dh-val-green,
+.neo-app.neo-theme-light .dh-val-orange,
+.neo-app.neo-theme-light .dh-val-dim {
+  color: #1d4ed8 !important;
+  text-shadow: none !important;
+}
+
+.neo-app.neo-theme-light .sl-config-btn:hover,
+.neo-app.neo-theme-light .sl-config-btn:active,
+.neo-app.neo-theme-light .sl-run-btn:hover,
+.neo-app.neo-theme-light .sl-run-btn:active,
+.neo-app.neo-theme-light .sl-check-btn:hover,
+.neo-app.neo-theme-light .sl-check-btn:active {
+  background-color: #7ab8ff !important;
+  border-color: #a8d0ff !important;
+  box-shadow: none !important;
+  transform: none !important;
+  background-image: none !important;
+  filter: none !important;
+  outline: none !important;
+}
+
+.neo-app.neo-theme-light .sl-config-btn:hover,
+.neo-app.neo-theme-light .sl-config-btn:active {
+  background-color: #edf4ff !important;
+  border-color: #d7e6ff !important;
+  color: #3b82f6 !important;
+}
+
+.neo-app.neo-theme-light .sl-config-btn::before,
+.neo-app.neo-theme-light .sl-run-btn::before,
+.neo-app.neo-theme-light .sl-check-btn::before {
+  content: none !important;
+  display: none !important;
+}
+
+.neo-app.neo-theme-light .sl-config-btn:focus,
+.neo-app.neo-theme-light .sl-config-btn:focus-visible,
+.neo-app.neo-theme-light .sl-run-btn:focus,
+.neo-app.neo-theme-light .sl-run-btn:focus-visible,
+.neo-app.neo-theme-light .sl-check-btn:focus,
+.neo-app.neo-theme-light .sl-check-btn:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+  filter: none !important;
 }

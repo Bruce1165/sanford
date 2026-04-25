@@ -247,7 +247,7 @@ insecure content from http://static.cpolar.com/css/fonts/...
 ```bash
 # 终端 1: 启动 Flask
 cd /Users/mac/NeoTrade2
-DASHBOARD_PASSWORD=NeoTrade2025 python3 backend/app.py --port 8765
+DASHBOARD_PASSWORD=NeoTrade123 python3 backend/app.py --port 8765
 
 # 终端 2: 启动 Cpolar 隧道
 cpolar start
@@ -429,7 +429,7 @@ launchctl kickstart -k gui/$(id -u)/com.neotrade2.flask
 tail -20 /Users/mac/NeoTrade2/logs/flask.stdout.log
 
 # 4. 测试本地访问
-curl -u admin:NeoTrade2025 http://localhost:8765/
+curl -u admin:NeoTrade123 http://localhost:8765/
 ```
 
 ### Q2: 看到混合内容警告，怎么解决？

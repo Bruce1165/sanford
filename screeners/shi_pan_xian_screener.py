@@ -62,6 +62,14 @@ class ShiPanXianScreener(BaseScreener):
         volume_shrink_threshold: float = 0.25,
         callback_max_days: int = 10,
         breakout_volume_ratio: float = 1.5,
+        limit_up_search_days: int = 5,
+        high_volume_peak_tolerance: float = 0.95,
+        min_history_days: int = 50,
+        min_days_after_high_volume: int = 3,
+        main_board_limit_up_pct: float = 9.5,
+        gem_star_limit_up_pct: float = 19.5,
+        bse_limit_up_pct: float = 29.5,
+        st_limit_up_pct: float = 4.5,
         check_data_update: bool = True,
         use_pool: bool = False,
     ):
@@ -75,6 +83,14 @@ class ShiPanXianScreener(BaseScreener):
         self.volume_shrink_threshold = volume_shrink_threshold
         self.callback_max_days = callback_max_days
         self.breakout_volume_ratio = breakout_volume_ratio
+        self.limit_up_search_days = max(1, int(limit_up_search_days))
+        self.high_volume_peak_tolerance = float(high_volume_peak_tolerance)
+        self.min_history_days = max(1, int(min_history_days))
+        self.min_days_after_high_volume = max(1, int(min_days_after_high_volume))
+        self.main_board_limit_up_pct = float(main_board_limit_up_pct)
+        self.gem_star_limit_up_pct = float(gem_star_limit_up_pct)
+        self.bse_limit_up_pct = float(bse_limit_up_pct)
+        self.st_limit_up_pct = float(st_limit_up_pct)
         self.check_data_update = check_data_update
         self.use_pool = use_pool
         # StockFilter 是纯静态工具类，直接用类方法，无需实例化
@@ -166,12 +182,12 @@ class ShiPanXianScreener(BaseScreener):
         name = str(row.get('name', ''))
 
         if code.startswith(('300', '301', '688', '689')):
-            return pct >= 19.5          # 创业板 / 科创板 20%
+            return pct >= self.gem_star_limit_up_pct
         if code.startswith(('43', '83', '87', '88')):
-            return pct >= 29.5          # 北交所 30%
+            return pct >= self.bse_limit_up_pct
         if 'ST' in name or '*ST' in name:
-            return pct >= 4.5           # ST 股 5%
-        return pct >= 9.5               # 主板 10%
+            return pct >= self.st_limit_up_pct
+        return pct >= self.main_board_limit_up_pct
 
     def is_low_consolidation(self, df: pd.DataFrame, high_volume_idx: int) -> bool:
         """判断高量阳线前是否为低位横盘"""
@@ -185,16 +201,16 @@ class ShiPanXianScreener(BaseScreener):
 
     def find_high_volume_yang_line(self, df: pd.DataFrame) -> int | None:
         """寻找低位横盘后的高量阳线，返回索引"""
-        if len(df) < self.high_volume_lookback + 10:
+        if len(df) < self.high_volume_lookback + self.callback_max_days:
             return None
-        for i in range(len(df) - 5, self.consolidation_days, -1):
+        for i in range(len(df) - self.min_days_after_high_volume, self.consolidation_days, -1):
             row = df.iloc[i]
             if row['close'] <= row['open']:
                 continue
             lookback = df.iloc[max(0, i - self.high_volume_lookback):i]
             if lookback.empty:
                 continue
-            if row['volume'] < lookback['volume'].max() * 0.95:
+            if row['volume'] < lookback['volume'].max() * self.high_volume_peak_tolerance:
                 continue
             if not self.is_low_consolidation(df, i):
                 continue
@@ -205,15 +221,18 @@ class ShiPanXianScreener(BaseScreener):
         self, df: pd.DataFrame, high_volume_idx: int
     ) -> dict | None:
         """检查涨停 + 缩量回调 + 再次放量"""
-        if high_volume_idx >= len(df) - 3:
+        if high_volume_idx >= len(df) - self.min_days_after_high_volume:
             return None
 
         hv_row = df.iloc[high_volume_idx]
         high_volume = hv_row['volume']
 
-        # 寻找随后 5 天内的涨停（量低于高量阳线）
+        # 寻找随后 N 天内的涨停（量低于高量阳线）
         limit_up_idx = None
-        for i in range(high_volume_idx + 1, min(high_volume_idx + 6, len(df))):
+        for i in range(
+            high_volume_idx + 1,
+            min(high_volume_idx + 1 + self.limit_up_search_days, len(df))
+        ):
             row = df.iloc[i]
             prev_close = df.iloc[i - 1]['close']
             if self.is_limit_up(row, prev_close) and row['volume'] < high_volume:
@@ -295,7 +314,7 @@ class ShiPanXianScreener(BaseScreener):
     def screen_stock(self, code: str, name: str) -> dict | None:
         """筛选单只股票，返回结果 dict 或 None"""
         df = self.get_stock_data(code)
-        if df is None or len(df) < 50:
+        if df is None or len(df) < self.min_history_days:
             return None
 
         hv_idx = self.find_high_volume_yang_line(df)
@@ -338,11 +357,11 @@ class ShiPanXianScreener(BaseScreener):
             }
 
         df = self.get_stock_data(code)
-        if df is None or len(df) < 50:
+        if df is None or len(df) < self.min_history_days:
             return {
                 'match': False, 'code': code, 'name': name,
                 'date': self.current_date,
-                'reasons': ['无法获取足够的历史数据（需要至少 50 天）'],
+                'reasons': [f'无法获取足够的历史数据（需要至少 {self.min_history_days} 天）'],
                 'details': {},
             }
 

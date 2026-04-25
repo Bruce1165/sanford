@@ -53,6 +53,8 @@ class JinFengHuangScreener(BaseScreener):
                  signal_two_volume_ratio: float = 2.0,
                  signal_four_volume_ratio: float = 0.5,
                  signal_five_volume_ratio: float = 2.0,
+                 min_history_days: int = 10,
+                 history_buffer_days: int = 10,
                  db_path: str = "data/stock_data.db",
                  enable_news: bool = False,
                  enable_llm: bool = False,
@@ -71,6 +73,8 @@ class JinFengHuangScreener(BaseScreener):
         self.signal_two_volume_ratio = signal_two_volume_ratio
         self.signal_four_volume_ratio = signal_four_volume_ratio
         self.signal_five_volume_ratio = signal_five_volume_ratio
+        self.min_history_days = max(1, int(min_history_days))
+        self.history_buffer_days = max(0, int(history_buffer_days))
         self.use_pool = use_pool
 
     def get_screener_code(self) -> str:
@@ -139,6 +143,24 @@ class JinFengHuangScreener(BaseScreener):
                 'display_name': '信号五成交额倍数',
                 'description': '信号五（启动日）成交额需要达到前一日的倍数',
                 'group': '信号条件'
+            },
+            'MIN_HISTORY_DAYS': {
+                'type': 'int',
+                'default': 10,
+                'min': 1,
+                'max': 120,
+                'display_name': '最小历史天数',
+                'description': '单股筛选前要求的最少历史数据天数',
+                'group': '基础设置'
+            },
+            'HISTORY_BUFFER_DAYS': {
+                'type': 'int',
+                'default': 10,
+                'min': 0,
+                'max': 120,
+                'display_name': '历史缓冲天数',
+                'description': '加载数据时在 LIMIT_DAYS 基础上额外增加的缓冲天数',
+                'group': '基础设置'
             }
         }
 
@@ -273,8 +295,8 @@ class JinFengHuangScreener(BaseScreener):
     
     def screen_stock(self, code: str, name: str) -> Optional[Dict]:
         """筛选单只股票"""
-        df = self.get_stock_data(code, days=self.limit_days + 10)
-        if df is None or len(df) < 10:
+        df = self.get_stock_data(code, days=self.limit_days + self.history_buffer_days)
+        if df is None or len(df) < self.min_history_days:
             return None
         
         # 确保数据按日期排序

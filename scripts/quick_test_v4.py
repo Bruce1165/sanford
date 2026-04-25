@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'screeners'))
 
-from coffee_cup_screener_v4 import CoffeeCupScreenerV4
+from coffee_cup_handle_screener_v4 import CoffeeCupHandleScreenerV4
 import logging
 
 # 配置日志（显示详细过程）
@@ -22,7 +22,7 @@ def quick_test():
     print("咖啡杯形态筛选器 V4 - 快速测试")
     print("="*60)
 
-    screener = CoffeeCupScreenerV4()
+    screener = CoffeeCupHandleScreenerV4()
 
     # 获取前10只股票
     stocks = screener.get_all_stocks()[:10]

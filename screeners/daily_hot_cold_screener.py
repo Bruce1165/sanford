@@ -57,6 +57,7 @@ class DailyHotColdScreener(BaseScreener):
                  volume_surge_turnover: float = 5.0,
                  breakout_threshold: float = 0.99,
                  breakdown_threshold: float = 1.01,
+                 min_history_days: int = 5,
                  db_path: Optional[str] = None):
         super().__init__()
         self.screener_name = 'daily_hot_cold'
@@ -77,6 +78,7 @@ class DailyHotColdScreener(BaseScreener):
         self.volume_surge_turnover = volume_surge_turnover
         self.breakout_threshold = breakout_threshold
         self.breakdown_threshold = breakdown_threshold
+        self.min_history_days = max(1, int(min_history_days))
 
     @classmethod
     def get_parameter_schema(cls) -> Dict:
@@ -209,6 +211,15 @@ class DailyHotColdScreener(BaseScreener):
                 'display_name': '破位阈值',
                 'description': '跌破近N日低点的判断比例（1.01=101%）',
                 'group': '异动判断'
+            },
+            'MIN_HISTORY_DAYS': {
+                'type': 'int',
+                'default': 5,
+                'min': 1,
+                'max': 120,
+                'display_name': '最小历史天数',
+                'description': '计算统计项前要求的最少历史数据天数',
+                'group': '基础设置'
             }
         }
 
@@ -264,7 +275,7 @@ class DailyHotColdScreener(BaseScreener):
 
     def calculate_limit_up_stats(self, df: pd.DataFrame, code: str) -> Dict:
         """计算近N日涨跌停次数"""
-        if df is None or len(df) < 5:
+        if df is None or len(df) < self.min_history_days:
             return {'total_limit_up': 0, 'total_limit_down': 0,
                     'board': self.get_stock_board(code)}
 
@@ -284,7 +295,7 @@ class DailyHotColdScreener(BaseScreener):
 
     def calculate_returns(self, df: pd.DataFrame) -> Dict:
         """计算多周期收益率"""
-        if df is None or len(df) < 5:
+        if df is None or len(df) < self.min_history_days:
             return {'return_5d': 0, 'return_10d': 0, 'return_20d': 0, 'return_60d': 0}
 
         latest_close = df.iloc[-1]['close']

@@ -12,7 +12,8 @@ import sqlite3
 import logging
 import time
 from datetime import datetime
-from typing import List, Dict, Optional
+from datetime import date as dt_date
+from typing import List, Optional
 import re
 import json
 
@@ -79,7 +80,61 @@ class LaoYaTouFiveFlagsRepository:
         """
         self.db_path = db_path
         self.conn = None
+        self._is_trading_day = None
         self._connect()
+        self._init_business_constraints()
+
+    def _load_trading_day_checker(self):
+        """Lazy-load trading day checker to avoid import-order issues."""
+        if self._is_trading_day is not None:
+            return self._is_trading_day
+        try:
+            from scripts.trading_calendar import is_trading_day  # type: ignore
+            self._is_trading_day = is_trading_day
+            return self._is_trading_day
+        except Exception:
+            from trading_calendar import is_trading_day  # type: ignore
+            self._is_trading_day = is_trading_day
+            return self._is_trading_day
+
+    def _init_business_constraints(self) -> None:
+        """
+        Ensure business-key uniqueness:
+        stock_code + screen_date + screener_id.
+        """
+        self._dedupe_by_business_key()
+        self._create_business_key_unique_index()
+
+    def _dedupe_by_business_key(self) -> None:
+        """Drop duplicate rows and keep the newest one for each business key."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            '''
+            DELETE FROM lao_ya_tou_five_flags
+            WHERE id NOT IN (
+                SELECT MAX(id)
+                FROM lao_ya_tou_five_flags
+                GROUP BY stock_code, screen_date, screener_id
+            )
+            '''
+        )
+        deleted = cursor.rowcount if cursor.rowcount is not None else 0
+        if deleted > 0:
+            logger.warning(
+                "Deduplicated lao_ya_tou_five_flags by (stock_code, screen_date, screener_id), removed=%s",
+                deleted
+            )
+        self.conn.commit()
+
+    def _create_business_key_unique_index(self) -> None:
+        """Create composite unique index for business key."""
+        self.conn.execute(
+            '''
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_five_flags_stock_date_screener
+            ON lao_ya_tou_five_flags(stock_code, screen_date, screener_id)
+            '''
+        )
+        self.conn.commit()
 
     def _connect(self):
         """Establish database connection with proper settings."""
@@ -174,13 +229,19 @@ class LaoYaTouFiveFlagsRepository:
             raise ValidationError(f"{field_name} cannot be empty")
 
         try:
-            datetime.strptime(date_str, '%Y-%m-%d')
-        except ValueError as e:
+            parsed = datetime.strptime(date_str, '%Y-%m-%d').date()
+        except ValueError:
             raise ValidationError(
                 f"{field_name} must be in YYYY-MM-DD format: {date_str}"
             )
 
-    def _validate_price(self, price: float, field_name: str) -> None:
+        checker = self._load_trading_day_checker()
+        if not checker(parsed if isinstance(parsed, dt_date) else parsed):
+            raise ValidationError(
+                f"{field_name} must be a valid exchange trading day: {date_str}"
+            )
+
+    def _validate_price(self, price: Optional[float], field_name: str) -> None:
         """
         Validate price value.
 
@@ -261,28 +322,34 @@ class LaoYaTouFiveFlagsRepository:
 
         try:
             cursor = self.conn.cursor()
-            if extra_data:
-                extra_json = json.dumps(extra_data)
-                cursor.execute('''
-                    INSERT OR IGNORE INTO lao_ya_tou_five_flags
-                        (pool_id, screener_id, stock_code, stock_name,
-                         screen_date, close_price, match_reason, extra_data, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ''', (pool_id, screener_id, cleaned_name, screen_date,
-                       close_price, match_reason, extra_json))
-            else:
-                cursor.execute('''
-                    INSERT OR IGNORE INTO lao_ya_tou_five_flags
-                        (pool_id, screener_id, stock_code, stock_name,
-                         screen_date, close_price, match_reason, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ''', (pool_id, screener_id, cleaned_name, screen_date,
-                       close_price, match_reason))
+            extra_json = json.dumps(extra_data) if extra_data is not None else None
+            cursor.execute('''
+                INSERT INTO lao_ya_tou_five_flags
+                    (pool_id, screener_id, stock_code, stock_name,
+                     screen_date, close_price, match_reason, extra_data, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(stock_code, screen_date, screener_id) DO UPDATE SET
+                    pool_id = excluded.pool_id,
+                    stock_name = excluded.stock_name,
+                    close_price = excluded.close_price,
+                    match_reason = excluded.match_reason,
+                    extra_data = excluded.extra_data,
+                    created_at = CURRENT_TIMESTAMP
+            ''', (
+                pool_id,
+                screener_id,
+                stock_code,
+                cleaned_name,
+                screen_date,
+                close_price,
+                match_reason,
+                extra_json
+            ))
 
             flag_id = cursor.lastrowid
             self.conn.commit()
             logger.info(
-                f"Inserted flag result: pool={pool_id}, stock={cleaned_name}, "
+                f"Upserted flag result: pool={pool_id}, stock={cleaned_name}, "
                 f"screener={screener_id}, id={flag_id}"
             )
             return flag_id
@@ -342,43 +409,41 @@ class LaoYaTouFiveFlagsRepository:
             cleaned_name = re.sub(r'\s*\d*\s*$', '', record['stock_name'])
             cleaned_name = re.sub(r'[()（）]', '', cleaned_name)
 
-            # Build parameter list dynamically based on extra_data presence
+            extra_json = None
             if 'extra_data' in record:
                 extra_json = json.dumps(record['extra_data'])
-                params = [
-                    record['pool_id'],
-                    record['screener_id'],
-                    record['stock_code'],
-                    cleaned_name,
-                    record['screen_date'],
-                    record['close_price'],
-                    record['match_reason'],
-                    extra_json
-                ]
-            else:
-                params = [
-                    record['pool_id'],
-                    record['screener_id'],
-                    record['stock_code'],
-                    cleaned_name,
-                    record['screen_date'],
-                    record['close_price'],
-                    record['match_reason']
-                ]
+
+            params = [
+                record['pool_id'],
+                record['screener_id'],
+                record['stock_code'],
+                cleaned_name,
+                record['screen_date'],
+                record['close_price'],
+                record['match_reason'],
+                extra_json
+            ]
             data_to_insert.append(params)
 
         try:
             cursor = self.conn.cursor()
             cursor.executemany('''
-                INSERT OR IGNORE INTO lao_ya_tou_five_flags
+                INSERT INTO lao_ya_tou_five_flags
                     (pool_id, screener_id, stock_code, stock_name,
                      screen_date, close_price, match_reason, extra_data, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(stock_code, screen_date, screener_id) DO UPDATE SET
+                    pool_id = excluded.pool_id,
+                    stock_name = excluded.stock_name,
+                    close_price = excluded.close_price,
+                    match_reason = excluded.match_reason,
+                    extra_data = excluded.extra_data,
+                    created_at = CURRENT_TIMESTAMP
                 ''', data_to_insert)
 
             inserted_count = cursor.rowcount
             self.conn.commit()
-            logger.info(f"Batch attempted {len(results)}, actually inserted {inserted_count} (duplicates skipped)")
+            logger.info(f"Batch upsert attempted {len(results)}, affected rows={inserted_count}")
             return inserted_count
 
         except sqlite3.Error as e:

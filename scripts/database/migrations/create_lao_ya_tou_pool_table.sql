@@ -4,10 +4,12 @@
 DROP TABLE IF EXISTS lao_ya_tou_pool;
 CREATE TABLE lao_ya_tou_pool (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pool_biz_key TEXT UNIQUE,
     stock_code TEXT NOT NULL,
     stock_name TEXT NOT NULL,
     start_date DATE NOT NULL,
     end_date DATE NOT NULL,
+    last_screened_date DATE,
     file_name TEXT NOT NULL,
     upload_time DATETIME DEFAULT CURRENT_TIMESTAMP,
     processed INTEGER DEFAULT 0
@@ -16,6 +18,9 @@ CREATE TABLE lao_ya_tou_pool (
 -- Create indexes for query optimization
 -- Index 1: Speed up queries by stock code
 CREATE INDEX idx_pool_code ON lao_ya_tou_pool(stock_code);
+
+-- Index 1.1: Idempotent key for pool ingestion
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pool_biz_key_unique ON lao_ya_tou_pool(pool_biz_key);
 
 -- Index 2: Speed up date range queries
 CREATE INDEX idx_pool_dates ON lao_ya_tou_pool(start_date, end_date);

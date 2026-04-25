@@ -279,55 +279,32 @@ def run_screener_subprocess(screener_name, run_date):
             try:
                 config = load_screener_config(screener_name)
                 if config and 'parameters' in config:
-                    # Map parameter names from config to __init__ parameter names
-                    param_mapping = {
-                        # Coffee cup V4 parameters
-                        'RIM_INTERVAL_MIN': 'rim_interval_min',
-                        'RIM_INTERVAL_MAX': 'rim_interval_max',
-                        'RIM_PRICE_MATCH_PCT': 'rim_price_match_pct',
-                        'CUP_DEPTH_MIN': 'cup_depth_min',
-                        'CUP_DEPTH_MAX': 'cup_depth_max',
+                    # Strategy B: auto mapping (UPPER_CASE -> snake_case) + legacy aliases
+                    legacy_alias_mapping = {
+                        # Historical aliases kept for backward compatibility
                         'RAPID_DECLINE_DAYS': 'rapid_decline_days',
                         'RAPID_ASCENT_DAYS': 'rapid_ascent_days',
                         'HANDLE_MAX_DAYS': 'handle_max_days',
-                        'HANDLE_MAX_DROP_PCT': 'handle_max_drop_pct',
                         'AMOUNT_RATIO_THRESHOLD': 'amount_ratio_threshold',
                         'OSCILLATION_PRICE_CEIL_PCT': 'oscillation_price_ceil_pct',
-                        # Lao Ya Tou Zhou Xian parameters (backward compatible)
-                        'MA5_PERIOD': 'ma5_period',
-                        'MA10_PERIOD': 'ma10_period',
-                        'MA30_PERIOD': 'ma30_period',
-                        'LOCAL_HIGH_WINDOW': 'local_high_window',
-                        'VOLUME_CONTRACTION_THRESHOLD': 'volume_contraction_threshold',
-                        'MIN_GAP': 'min_gap',
-                        'MAX_GAP': 'max_gap',
-                        'MIN_WEEKS': 'min_weeks',
-                        'TEST_MODE': 'test_mode',
-                        # Lao Ya Tou Zhou Xian amplitude parameters (applies to ALL signals)
-                        'AMPLITUDE_LOOKBACK_WEEKS': 'amplitude_lookback_weeks',
-                        'AMPLITUDE_MIN_THRESHOLD': 'amplitude_min_threshold',
-                        # Lao Ya Tou Zhou Xian three-signal system parameters
-                        'ENABLE_SIGNAL_1': 'enable_signal_1',
-                        'ENABLE_SIGNAL_2': 'enable_signal_2',
-                        'ENABLE_SIGNAL_3': 'enable_signal_3',
-                        'SIGNAL_1_MIN_GAP': 'signal_1_min_gap',
-                        'SIGNAL_1_VOLUME_RATIO_MIN': 'signal_1_volume_ratio_min',
-                        'SIGNAL_2_CONFIRM_WEEKS': 'signal_2_confirm_weeks',
-                        'SIGNAL_3_BREAKOUT_LOOKBACK': 'signal_3_breakout_lookback',
-                        'POSITION_SIZE_SIGNAL_1_MIN': 'position_size_signal_1_min',
-                        'POSITION_SIZE_SIGNAL_1_MAX': 'position_size_signal_1_max',
-                        'POSITION_SIZE_SIGNAL_2_MIN': 'position_size_signal_2_min',
-                        'POSITION_SIZE_SIGNAL_2_MAX': 'position_size_signal_2_max',
-                        'POSITION_SIZE_SIGNAL_3_MIN': 'position_size_signal_3_min',
-                        'POSITION_SIZE_SIGNAL_3_MAX': 'position_size_signal_3_max',
-                        # Coffee cup parameters (legacy)
-                        'MIN_DAYS_AFTER_BREAKOUT': 'min_days_after_breakout',
-                        'MAX_DAYS_AFTER_BREAKOUT': 'max_days_after_breakout',
-                        # Common pattern: UPPER_CASE in config -> snake_case in __init__
                     }
-                    for config_key, param_name in param_mapping.items():
-                        if config_key in config['parameters'] and param_name in _init_params:
-                            _init_kwargs[param_name] = config['parameters'][config_key]['value']
+
+                    for config_key, param_payload in config['parameters'].items():
+                        value = param_payload.get('value') if isinstance(param_payload, dict) else param_payload
+                        candidate_names = []
+
+                        alias_name = legacy_alias_mapping.get(config_key)
+                        if alias_name:
+                            candidate_names.append(alias_name)
+
+                        auto_name = str(config_key).lower()
+                        if auto_name not in candidate_names:
+                            candidate_names.append(auto_name)
+
+                        for candidate_name in candidate_names:
+                            if candidate_name in _init_params:
+                                _init_kwargs[candidate_name] = value
+                                break
             except Exception as e:
                 print(f"Warning: Could not load config for {screener_name}: {e}")
 

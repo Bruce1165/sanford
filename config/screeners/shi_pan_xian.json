@@ -1,6 +1,6 @@
 {
   "display_name": "涨停试盘线",
-  "description": "寻找涨停板后的试盘信号。三个信号条件：信号一（最大量阳线T日后5日内出现量<T的涨停X日）、信号二（X日后最低价>X日开盘价）、信号三（X日后量<T日×0.25）。",
+  "description": "涨停试盘线筛选。核心条件：先识别低位横盘后的高量阳线，再在后续窗口中寻找低量涨停、区间内缩量回调与再次放量。",
   "category": "内部公式",
   "metadata": {
     "version": "v1.0",
@@ -9,58 +9,153 @@
     "updated_by": "fix_3types"
   },
   "parameters": {
-    "LIMIT_DAYS": {
-      "value": 14,
-      "display_name": "时间范围（交易日）",
-      "description": "筛选最近多少个交易日内的信号",
-      "group": "基础设置",
+    "CONSOLIDATION_DAYS": {
+      "value": 20,
+      "display_name": "低位横盘天数",
+      "description": "识别高量阳线前，要求至少有 N 天低位横盘区间",
+      "group": "横盘识别",
+      "type": "int",
+      "min": 5,
+      "max": 60,
+      "default": 20
+    },
+    "HIGH_VOLUME_LOOKBACK": {
+      "value": 30,
+      "display_name": "高量回看天数",
+      "description": "在最近 N 天内识别“高量阳线”是否为阶段高量",
+      "group": "高量识别",
+      "type": "int",
+      "min": 10,
+      "max": 120,
+      "default": 30
+    },
+    "MAX_CONSOLIDATION_GAIN": {
+      "value": 0.1,
+      "display_name": "横盘涨幅上限",
+      "description": "横盘区间首尾涨跌幅绝对值不得超过该比例",
+      "group": "横盘识别",
+      "type": "float",
+      "min": 0.02,
+      "max": 0.3,
+      "step": 0.01,
+      "default": 0.1
+    },
+    "VOLUME_SHRINK_THRESHOLD": {
+      "value": 0.25,
+      "display_name": "缩量阈值",
+      "description": "回调期成交量低于高量阳线成交量的该比例，判定为缩量",
+      "group": "回调与缩量",
+      "type": "float",
+      "min": 0.05,
+      "max": 1.0,
+      "step": 0.01,
+      "default": 0.25
+    },
+    "CALLBACK_MAX_DAYS": {
+      "value": 10,
+      "display_name": "最大回调天数",
+      "description": "从涨停日开始，最多观察 N 天回调窗口",
+      "group": "回调与缩量",
+      "type": "int",
+      "min": 3,
+      "max": 40,
+      "default": 10
+    },
+    "BREAKOUT_VOLUME_RATIO": {
+      "value": 1.5,
+      "display_name": "放量突破倍数",
+      "description": "再次放量日成交量需大于缩量区间平均成交量的该倍数",
+      "group": "回调与缩量",
+      "type": "float",
+      "min": 1.0,
+      "max": 5.0,
+      "step": 0.1,
+      "default": 1.5
+    },
+    "LIMIT_UP_SEARCH_DAYS": {
+      "value": 5,
+      "display_name": "涨停搜索窗口",
+      "description": "高量阳线后最多 N 天内必须出现低量涨停",
+      "group": "涨停识别",
       "type": "int",
       "min": 1,
-      "max": 60,
-      "default": 14
+      "max": 20,
+      "default": 5
     },
-    "LIMIT_UP_THRESHOLD": {
-      "value": 9.9,
-      "display_name": "涨停阈值（%）",
-      "description": "判断涨停的最低涨幅阈值",
-      "group": "信号条件",
-      "type": "float",
-      "min": 9.0,
-      "max": 10.5,
-      "step": 0.1,
-      "default": 9.9
-    },
-    "T_DAY_TOLERANCE": {
+    "HIGH_VOLUME_PEAK_TOLERANCE": {
       "value": 0.95,
-      "display_name": "T日成交额容忍度",
-      "description": "T日成交额需要达到最大成交额的倍数（允许误差）",
-      "group": "信号条件",
+      "display_name": "高量峰值容忍度",
+      "description": "候选高量阳线成交量需不低于回看区间最大量的该比例",
+      "group": "高量识别",
       "type": "float",
-      "min": 0.9,
+      "min": 0.5,
       "max": 1.0,
       "step": 0.01,
       "default": 0.95
     },
-    "DAYS_AFTER_T": {
-      "value": 5,
-      "display_name": "T日后交易日内数",
-      "description": "在T日之后多少个交易日内寻找X日（涨停板）",
-      "group": "信号条件",
+    "MIN_HISTORY_DAYS": {
+      "value": 50,
+      "display_name": "最小历史天数",
+      "description": "单股筛选至少需要的历史数据天数",
+      "group": "基础设置",
       "type": "int",
-      "min": 3,
-      "max": 10,
-      "default": 5
+      "min": 20,
+      "max": 300,
+      "default": 50
     },
-    "SIGNAL_THREE_RATIO": {
-      "value": 0.25,
-      "display_name": "信号三成交额比例",
-      "description": "启动日成交额需要小于T日成交额的倍数",
-      "group": "信号条件",
+    "MIN_DAYS_AFTER_HIGH_VOLUME": {
+      "value": 3,
+      "display_name": "高量后最少观察天数",
+      "description": "高量阳线后至少保留 N 天观察窗口，才进入后续涨停/回调判定",
+      "group": "基础设置",
+      "type": "int",
+      "min": 1,
+      "max": 30,
+      "default": 3
+    },
+    "MAIN_BOARD_LIMIT_UP_PCT": {
+      "value": 9.5,
+      "display_name": "主板涨停阈值",
+      "description": "主板股票判定涨停所需的最小涨幅（%）",
+      "group": "涨停识别",
       "type": "float",
-      "min": 0.15,
-      "max": 0.4,
-      "step": 0.05,
-      "default": 0.25
+      "min": 0.0,
+      "max": 20.0,
+      "step": 0.1,
+      "default": 9.5
+    },
+    "GEM_STAR_LIMIT_UP_PCT": {
+      "value": 19.5,
+      "display_name": "创业/科创涨停阈值",
+      "description": "创业板与科创板判定涨停所需的最小涨幅（%）",
+      "group": "涨停识别",
+      "type": "float",
+      "min": 0.0,
+      "max": 40.0,
+      "step": 0.1,
+      "default": 19.5
+    },
+    "BSE_LIMIT_UP_PCT": {
+      "value": 29.5,
+      "display_name": "北交所涨停阈值",
+      "description": "北交所股票判定涨停所需的最小涨幅（%）",
+      "group": "涨停识别",
+      "type": "float",
+      "min": 0.0,
+      "max": 50.0,
+      "step": 0.1,
+      "default": 29.5
+    },
+    "ST_LIMIT_UP_PCT": {
+      "value": 4.5,
+      "display_name": "ST涨停阈值",
+      "description": "ST 股票判定涨停所需的最小涨幅（%）",
+      "group": "涨停识别",
+      "type": "float",
+      "min": 0.0,
+      "max": 20.0,
+      "step": 0.1,
+      "default": 4.5
     }
   }
 }

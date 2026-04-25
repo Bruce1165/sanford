@@ -6,6 +6,32 @@
 
 ---
 
+## 2026-04-26 现状更新（已落地）
+
+本问题已按“严格策略”完成收口：**非交易日不再自动回退到最近交易日执行**，而是拒绝运行/查询，并返回建议的最近交易日，避免日期语义混乱。
+
+### 统一后的运行语义
+
+- **requested_date**：用户输入/请求的日期（YYYY-MM-DD）
+- **effective_trade_date**：实际用于计算/查询的交易日（必须是交易日）
+
+### API 层统一约束（推荐入口）
+
+- `GET /api/trading-day?date=YYYY-MM-DD`
+  - 返回 `is_trading_day`，以及 `recent_trading_day`（基于 `daily_prices` 的 `MAX(trade_date) <= requested_date`）。
+- `POST /api/screeners/<name>/run`（严格）
+  - 若 `requested_date` 非交易日：返回 `400`，body 含 `{ error, requested_date, effective_trade_date }`。
+  - 若 `requested_date` 为交易日：正常运行，响应里返回 `{ requested_date, effective_trade_date }`（两者相同）。
+- `GET /api/results?screener=<name>&date=YYYY-MM-DD`（严格）
+  - 若 `requested_date` 非交易日：返回 `400`，body 含 `{ error, requested_date, effective_trade_date }`。
+
+### Screener 层（BaseScreener）约束
+
+- `BaseScreener.current_date` setter 不再“自动回退”，改为 **遇到非交易日直接抛出异常**（包含建议最近交易日）。
+- 目的：防止筛选器内部偷偷修正日期导致结果标记与实际计算日期不一致。
+
+---
+
 ## 复现步骤
 
 ### 测试环境
@@ -170,7 +196,7 @@ get_recent_trading_day(yesterday)  # 返回 2026-04-03（最近的交易日）
 
 ## 修复方案
 
-### 方案A：在 BaseScreener 中自动修正（推荐）
+### 方案A：在 BaseScreener 中自动修正（历史方案，已弃用）
 
 **修改位置**：`screeners/base_screener.py`
 
@@ -277,9 +303,9 @@ def run_screening(self, date_str: Optional[str] = None, ...):
 ### 修复后的影响
 | 场景 | 影响 |
 |------|------|
-| 用户指定非交易日日期 | ✅ 自动调整为最近的交易日，或直接拒绝 |
-| 数据同步后立即运行 | ✅ 自动使用正确的交易日 |
-| 自动任务运行 | ✅ 始终在交易日运行 |
+| 用户指定非交易日日期 | ✅ API/筛选器拒绝，并返回建议最近交易日 |
+| 数据同步后立即运行 | ✅ 只要传入交易日即可稳定运行；不再发生“周末日期跑周五数据”的语义错配 |
+| 自动任务运行 | ✅ 调度层需要确保传入交易日（或显式采用“自动回退”的批处理策略） |
 
 ---
 
@@ -290,10 +316,11 @@ def run_screening(self, date_str: Optional[str] = None, ...):
 ### 测试1：指定非交易日
 ```bash
 # 指定周末日期
-python3 screeners/er_ban_hui_tiao_screener.py --date 2026-04-06
+curl -i 'http://127.0.0.1:8765/api/results?screener=er_ban_hui_tiao&date=2026-04-06'
+curl -i -X POST 'http://127.0.0.1:8765/api/screeners/er_ban_hui_tiao/run' \
+  -H 'Content-Type: application/json' --data '{"date":"2026-04-06"}'
 
-# 预期：自动调整为 2026-04-03 或 2026-04-07（取决于修复逻辑）
-# 或直接返回空列表并提示非交易日
+# 预期：HTTP 400，返回 Non-trading day，并包含 effective_trade_date（最近交易日）
 ```
 
 ### 测试2：指定节假日
@@ -307,9 +334,11 @@ python3 screeners/er_ban_hui_tiao_screener.py --date 2026-02-09
 ### 测试3：正常交易日
 ```bash
 # 指定周一（正常交易日）
-python3 screeners/er_ban_hui_tiao_screener.py --date 2026-04-07
+curl -i -X POST 'http://127.0.0.1:8765/api/screeners/er_ban_hui_tiao/run' \
+  -H 'Content-Type: application/json' --data '{"date":"2026-04-07"}'
+curl -i 'http://127.0.0.1:8765/api/results?screener=er_ban_hui_tiao&date=2026-04-07'
 
-# 预期：正常运行，基于 2026-04-07 的数据
+# 预期：run 返回 success；results 返回结果（可能为空但不报错）
 ```
 
 ### 测试4：不指定日期
@@ -338,13 +367,12 @@ python3 screeners/er_ban_hui_tiao_screener.py
 
 **原因**：`base_screener.py` 中的 `current_date` setter 和 `get_stock_data()` 方法没有交易日验证逻辑。
 
-**解决方案**：在 `BaseScreener` 的 `current_date` setter 中自动调整为交易日，这是最简单且影响最小的方案。
+**解决方案（已采用）**：在 API 层对“运行/查询”统一执行严格交易日校验；非交易日直接拒绝并返回建议的最近交易日，同时在 `BaseScreener.current_date` setter 禁止非交易日自动回退，避免日期语义混乱。
 
 **建议**：
-1. 采用方案A（在 BaseScreener 中自动修正）
-2. 优先修复 `current_date` setter（高优先级）
-3. 补充 `check_data_availability()` 检查（中优先级）
-4. 运行测试验证修复效果
+1. 所有交互入口（前端/脚本）都应先用 `/api/trading-day` 判定交易日，并在非交易日提示用户
+2. 若批处理场景确实需要“自动回退”，把策略放在调度/脚本层显式实现，而不是在 API 或 BaseScreener 内隐式回退
+3. 按“测试建议”覆盖非交易日/交易日两条链路，确保不会报错
 
 ---
 

@@ -15,22 +15,33 @@ import time
 import logging
 import importlib
 import inspect
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from datetime import datetime
 from pathlib import Path
 
 import sqlite3
+import pandas as pd
 
 # Add both scripts and backend directories to path
 # IMPORTANT: Insert project_root FIRST to ensure screeners/ directory is found before backend/screeners.py
 scripts_dir = str(Path(__file__).parent)
 project_root = str(Path(__file__).parent.parent)  # NeoTrade2 directory
 
-# Only insert if not already in path
-if scripts_dir not in sys.path:
-    sys.path.insert(0, scripts_dir)
-if project_root not in sys.path:
-    sys.path.insert(1, project_root)
+# Force project_root to the front so `screeners/` package wins over backend/screeners.py
+if project_root in sys.path:
+    sys.path.remove(project_root)
+sys.path.insert(0, project_root)
+if scripts_dir in sys.path:
+    sys.path.remove(scripts_dir)
+sys.path.insert(1, scripts_dir)
+
+# If a wrong top-level `screeners` module was already loaded from backend/screeners.py,
+# drop it so the following imports resolve to project_root/screeners package.
+loaded_screeners = sys.modules.get('screeners')
+if loaded_screeners is not None:
+    loaded_file = str(getattr(loaded_screeners, '__file__', '') or '')
+    if loaded_file.endswith('/backend/screeners.py'):
+        del sys.modules['screeners']
 
 # Import screener modules directly from screeners package FIRST
 # This must be done before importing anything from backend to avoid conflicts
@@ -60,7 +71,7 @@ FIVE_FLAGS_SCREENERS = {
 class ScreenerAdapter:
     """Adapter to unify 5 screener interfaces"""
 
-    def __init__(self, db_path: str = 'data/stock_data.db'):
+    def __init__(self, db_path: str = 'data/stock_data.db', screener_overrides: Optional[Dict[str, Dict]] = None):
         """
         Initialize adapter.
 
@@ -68,6 +79,7 @@ class ScreenerAdapter:
             db_path: Path to stock_data.db
         """
         self.db_path = db_path
+        self.screener_overrides = screener_overrides or {}
         self.screener_instances = {}
         self.screener_map = {}
         self.statistics = {
@@ -78,6 +90,50 @@ class ScreenerAdapter:
             'avg_time_ms': 0
         }
         self._load_screeners()
+
+    @staticmethod
+    def _extract_config_kwargs(config: Optional[Dict], init_params: Dict) -> Dict:
+        """Extract init kwargs from config in either legacy or dashboard format."""
+        if not isinstance(config, dict):
+            return {}
+
+        kwargs = {}
+        parameters = config.get('parameters')
+        if isinstance(parameters, dict):
+            for key, meta in parameters.items():
+                value = meta.get('value') if isinstance(meta, dict) else meta
+                normalized = str(key).strip().lower()
+                if normalized in init_params:
+                    kwargs[normalized] = value
+
+        config_json = config.get('config_json')
+        if isinstance(config_json, dict):
+            for key, value in config_json.items():
+                normalized = str(key).strip().lower()
+                if normalized in init_params:
+                    kwargs[normalized] = value
+
+        # Fallback for plain flat configs.
+        if not kwargs:
+            for key, value in config.items():
+                if key in {'display_name', 'description', 'category', 'metadata', 'parameters'}:
+                    continue
+                normalized = str(key).strip().lower()
+                if normalized in init_params:
+                    kwargs[normalized] = value
+        return kwargs
+
+    def _extract_override_kwargs(self, screener_id: str, init_params: Dict) -> Dict:
+        """Extract per-screener runtime override kwargs."""
+        overrides = self.screener_overrides.get(screener_id) or {}
+        if not isinstance(overrides, dict):
+            return {}
+        kwargs = {}
+        for key, value in overrides.items():
+            normalized = str(key).strip().lower()
+            if normalized in init_params:
+                kwargs[normalized] = value
+        return kwargs
 
     def _load_screeners(self) -> Dict[str, object]:
         """
@@ -119,15 +175,16 @@ class ScreenerAdapter:
                 # Build kwargs based on what screener accepts and config
                 screener_kwargs = {'db_path': self.db_path}
 
-                # If config exists from database, extract parameters from config_json
-                if config and 'config_json' in config:
-                    logger.info(f"Loaded config from Dashboard for {screener_id}")
-                    # Extract parameters from config_json
-                    config_params = config['config_json']
-                    for key, value in config_params.items():
-                        screener_kwargs[key] = value
+                if config:
+                    logger.info(f"Loaded config for {screener_id}")
+                    screener_kwargs.update(self._extract_config_kwargs(config, init_params))
                 else:
                     logger.info(f"No config found in Dashboard for {screener_id}, using defaults")
+
+                runtime_overrides = self._extract_override_kwargs(screener_id, init_params)
+                if runtime_overrides:
+                    logger.info(f"Applied runtime phase overrides for {screener_id}: {list(runtime_overrides.keys())}")
+                    screener_kwargs.update(runtime_overrides)
 
                 # Optional parameters - only add if screener accepts them
                 if 'enable_news' in init_params:
@@ -173,7 +230,8 @@ class ScreenerAdapter:
         return trading_days
 
     def check_stock(self, screener_id: str, stock_code: str,
-                  stock_name: str, date: str) -> Optional[dict]:
+                  stock_name: str, date: str,
+                  include_miss_details: bool = False) -> Optional[dict]:
         """
         Call specified screener to check single stock on single day.
 
@@ -232,7 +290,272 @@ class ScreenerAdapter:
             self.statistics['failed_calls'] += 1
             self.statistics['by_screener'][screener_id]['failures'] += 1
 
-        return result
+        if result is not None or not include_miss_details:
+            return result
+
+        miss_detail = self._diagnose_miss(screener, screener_id, stock_code, stock_name)
+        return {
+            'matched': False,
+            'screener_id': screener_id,
+            'code': stock_code,
+            'name': stock_name,
+            **miss_detail,
+        }
+
+    @staticmethod
+    def _first_failure(checks):
+        for item in checks:
+            if not item.get('passed'):
+                return item
+        return None
+
+    @staticmethod
+    def _normalize_hint_list(items, limit: int = 6) -> List[str]:
+        if not isinstance(items, list):
+            return []
+        hints: List[str] = []
+        seen = set()
+        for item in items:
+            text = str(item or '').strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            hints.append(text)
+            if len(hints) >= limit:
+                break
+        return hints
+
+    def _build_miss_payload(self, checks, fallback_reason: str, diagnostic_hints: Optional[List[str]] = None) -> Dict:
+        first_failed = self._first_failure(checks)
+        reason_miss = first_failed.get('message') if first_failed else fallback_reason
+        hints: List[str] = []
+        passed_labels = [
+            str(item.get('label', '') or '').strip()
+            for item in checks
+            if isinstance(item, dict) and item.get('passed')
+        ]
+        if passed_labels:
+            hints.append(f"主链通过阶段: {' -> '.join([x for x in passed_labels if x])}")
+        if first_failed and first_failed.get('label'):
+            hints.append(f"主链阻断阶段: {str(first_failed.get('label') or '').strip()}")
+        failed_messages = [
+            str(item.get('message', '') or '').strip()
+            for item in checks
+            if isinstance(item, dict) and not item.get('passed')
+        ]
+        for msg in failed_messages:
+            if msg and msg != reason_miss:
+                hints.append(f"补充线索: {msg}")
+        if isinstance(diagnostic_hints, list):
+            hints.extend(diagnostic_hints)
+        normalized_hints = self._normalize_hint_list(hints)
+        return {
+            'reason_miss': reason_miss,
+            'failed_checks': checks,
+            'first_failed_check': first_failed,
+            'diagnostic_hints': normalized_hints,
+        }
+
+    def _load_sorted_df(self, screener: object, stock_code: str, min_rows: int, default_days: int = 24):
+        days = getattr(screener, 'limit_days', default_days)
+        days = int(days) + 10 if days else default_days
+        df = screener.get_stock_data(stock_code, days=days)
+        if df is None or len(df) < min_rows:
+            return None
+        if isinstance(df, pd.DataFrame):
+            return df.sort_values('trade_date').reset_index(drop=True)
+        return None
+
+    def _diagnose_er_ban_hui_tiao(self, screener: object, stock_code: str) -> Dict:
+        checks = []
+        df = self._load_sorted_df(screener, stock_code, min_rows=10)
+        checks.append({'key': 'data', 'label': '数据完整性', 'passed': df is not None, 'message': '可用K线不足（至少10个交易日）'})
+        if df is None:
+            return self._build_miss_payload(checks, '数据不足，无法判定二板回调信号')
+
+        signal_one = screener.find_signal_one(df)
+        checks.append({'key': 'signal_1', 'label': '信号1', 'passed': signal_one is not None, 'message': '未满足二连板+量能约束（信号1）'})
+        if signal_one is None:
+            return self._build_miss_payload(checks, '信号1未满足')
+
+        signal_one_idx = signal_one['first_idx']
+        latest_date = df.iloc[-1]['trade_date']
+        signal_one_date = df.iloc[signal_one_idx]['trade_date']
+        within_window = (latest_date - signal_one_date).days <= screener.limit_days
+        checks.append({'key': 'window', 'label': '时间窗口', 'passed': within_window, 'message': f'信号1超出最近{screener.limit_days}个交易日窗口'})
+        if not within_window:
+            return self._build_miss_payload(checks, '信号触发时间超窗')
+
+        signal_two_ok = screener.check_signal_two(df, signal_one_idx)
+        checks.append({'key': 'signal_2', 'label': '信号2', 'passed': signal_two_ok, 'message': '信号2失败：后续最低价跌破Day T开盘价'})
+        if not signal_two_ok:
+            return self._build_miss_payload(checks, '价格保护条件不满足')
+
+        signal_three = screener.find_signal_three(df, signal_one_idx)
+        checks.append({'key': 'signal_3', 'label': '信号3', 'passed': signal_three is not None, 'message': '未出现满足启动条件的Day X（信号3）'})
+        return self._build_miss_payload(checks, '未满足完整信号链路')
+
+    def _diagnose_jin_feng_huang(self, screener: object, stock_code: str) -> Dict:
+        checks = []
+        df = self._load_sorted_df(screener, stock_code, min_rows=10)
+        checks.append({'key': 'data', 'label': '数据完整性', 'passed': df is not None, 'message': '可用K线不足（至少10个交易日）'})
+        if df is None:
+            return self._build_miss_payload(checks, '数据不足，无法判定金凤凰信号')
+
+        candidate_idx = None
+        for i in range(len(df) - 1, 0, -1):
+            if not screener.check_signal_one(df, i):
+                continue
+            latest_date = df.iloc[-1]['trade_date']
+            if (latest_date - df.iloc[i]['trade_date']).days <= screener.limit_days:
+                candidate_idx = i
+                break
+        checks.append({'key': 'signal_1', 'label': '信号1', 'passed': candidate_idx is not None, 'message': '未找到满足涨停量能的一号信号日'})
+        if candidate_idx is None:
+            return self._build_miss_payload(checks, '信号1未满足')
+
+        signal_two_ok = screener.check_signal_two(df, candidate_idx)
+        checks.append({'key': 'signal_2', 'label': '信号2', 'passed': signal_two_ok, 'message': '信号2失败：次日高开收阳+放量条件不满足'})
+        if not signal_two_ok:
+            return self._build_miss_payload(checks, '信号2未满足')
+
+        signal_two_idx = candidate_idx + 1
+        signal_four_idx = screener.find_signal_four(df, signal_two_idx)
+        checks.append({'key': 'signal_4', 'label': '信号4', 'passed': signal_four_idx is not None, 'message': '未找到地量日（信号4）'})
+        if signal_four_idx is None:
+            return self._build_miss_payload(checks, '信号4未满足')
+
+        signal_five_idx = screener.find_signal_five(df, signal_four_idx, candidate_idx)
+        checks.append({'key': 'signal_5', 'label': '信号5', 'passed': signal_five_idx is not None, 'message': '未找到启动日（信号5）'})
+        if signal_five_idx is None:
+            return self._build_miss_payload(checks, '信号5未满足')
+
+        signal_three_ok = screener.check_signal_three(df, candidate_idx, signal_five_idx)
+        checks.append({'key': 'signal_3', 'label': '信号3', 'passed': signal_three_ok, 'message': '信号3失败：中间区间存在低点跌破信号一高点'})
+        return self._build_miss_payload(checks, '未满足完整信号链路')
+
+    def _diagnose_yin_feng_huang(self, screener: object, stock_code: str) -> Dict:
+        checks = []
+        df = self._load_sorted_df(screener, stock_code, min_rows=10)
+        checks.append({'key': 'data', 'label': '数据完整性', 'passed': df is not None, 'message': '可用K线不足（至少10个交易日）'})
+        if df is None:
+            return self._build_miss_payload(checks, '数据不足，无法判定银凤凰信号')
+
+        candidate_idx = None
+        for i in range(len(df) - 1, 0, -1):
+            if not screener.check_signal_one(df, i):
+                continue
+            latest_date = df.iloc[-1]['trade_date']
+            if (latest_date - df.iloc[i]['trade_date']).days <= screener.limit_days:
+                candidate_idx = i
+                break
+        checks.append({'key': 'signal_1', 'label': '信号1', 'passed': candidate_idx is not None, 'message': '未找到满足涨停量能的一号信号日'})
+        if candidate_idx is None:
+            return self._build_miss_payload(checks, '信号1未满足')
+
+        signal_three_idx = screener.find_signal_three(df, candidate_idx)
+        checks.append({'key': 'signal_3', 'label': '信号3', 'passed': signal_three_idx is not None, 'message': '未找到缩量阴线日（信号3）'})
+        if signal_three_idx is None:
+            return self._build_miss_payload(checks, '信号3未满足')
+
+        signal_four_idx = screener.find_signal_four(df, signal_three_idx)
+        checks.append({'key': 'signal_4', 'label': '信号4', 'passed': signal_four_idx is not None, 'message': '未找到启动日（信号4）'})
+        if signal_four_idx is None:
+            return self._build_miss_payload(checks, '信号4未满足')
+
+        signal_two_ok = screener.check_signal_two(df, candidate_idx, signal_four_idx)
+        checks.append({'key': 'signal_2', 'label': '信号2', 'passed': signal_two_ok, 'message': '信号2失败：区间最低价跌破信号一开盘价'})
+        return self._build_miss_payload(checks, '未满足完整信号链路')
+
+    def _diagnose_zhang_ting_bei_liang_yin(self, screener: object, stock_code: str) -> Dict:
+        checks = []
+        df = self._load_sorted_df(screener, stock_code, min_rows=10)
+        checks.append({'key': 'data', 'label': '数据完整性', 'passed': df is not None, 'message': '可用K线不足（至少10个交易日）'})
+        if df is None:
+            return self._build_miss_payload(checks, '数据不足，无法判定倍量阴信号')
+
+        candidate_idx = None
+        for i in range(len(df) - 1, -1, -1):
+            if not screener.check_signal_one(df, i):
+                continue
+            latest_date = df.iloc[-1]['trade_date']
+            if (latest_date - df.iloc[i]['trade_date']).days <= screener.limit_days:
+                candidate_idx = i
+                break
+        checks.append({'key': 'signal_1', 'label': '信号1', 'passed': candidate_idx is not None, 'message': '未找到满足涨停阳线形态的一号信号日'})
+        if candidate_idx is None:
+            return self._build_miss_payload(checks, '信号1未满足')
+
+        signal_two_idx = candidate_idx + 1
+        signal_two_ok = signal_two_idx < len(df) and screener.check_signal_two(df, signal_two_idx)
+        checks.append({'key': 'signal_2', 'label': '信号2', 'passed': signal_two_ok, 'message': '信号2失败：次日高开阴线形态不满足'})
+        if not signal_two_ok:
+            return self._build_miss_payload(checks, '信号2未满足')
+
+        signal_three_ok = screener.check_signal_three(df, candidate_idx, signal_two_idx)
+        checks.append({'key': 'signal_3', 'label': '信号3', 'passed': signal_three_ok, 'message': '信号3失败：次日成交额未达到阈值'})
+        if not signal_three_ok:
+            return self._build_miss_payload(checks, '信号3未满足')
+
+        signal_four_idx = screener.find_signal_four(df, candidate_idx)
+        checks.append({'key': 'signal_4', 'label': '信号4', 'passed': signal_four_idx is not None, 'message': '未找到低量日（信号4）'})
+        if signal_four_idx is None:
+            return self._build_miss_payload(checks, '信号4未满足')
+
+        signal_five_idx = screener.find_signal_five(df, signal_four_idx)
+        checks.append({'key': 'signal_5', 'label': '信号5', 'passed': signal_five_idx is not None, 'message': '未找到启动日（信号5）'})
+        if signal_five_idx is None:
+            return self._build_miss_payload(checks, '信号5未满足')
+
+        price_protection_ok = screener.check_price_protection(df, candidate_idx)
+        checks.append({'key': 'signal_2_5', 'label': '信号2.5', 'passed': price_protection_ok, 'message': '价格保护失败：后续低点跌破Day T开盘价'})
+        return self._build_miss_payload(checks, '未满足完整信号链路')
+
+    def _diagnose_shi_pan_xian(self, screener: object, stock_code: str) -> Dict:
+        checks = []
+        df = screener.get_stock_data(stock_code)
+        if isinstance(df, pd.DataFrame):
+            df = df.sort_values('trade_date').reset_index(drop=True)
+        else:
+            df = None
+        checks.append({'key': 'data', 'label': '数据完整性', 'passed': df is not None and len(df) >= 50, 'message': '可用K线不足（至少50个交易日）'})
+        if df is None or len(df) < 50:
+            return self._build_miss_payload(checks, '数据不足，无法判定试盘线信号')
+
+        hv_idx = screener.find_high_volume_yang_line(df)
+        checks.append({'key': 'signal_1', 'label': '信号1', 'passed': hv_idx is not None, 'message': '未找到低位横盘后的高量阳线'})
+        if hv_idx is None:
+            return self._build_miss_payload(checks, '信号1未满足')
+
+        callback = screener.check_limit_up_and_callback(df, hv_idx)
+        checks.append({
+            'key': 'signal_2_5',
+            'label': '信号2-5',
+            'passed': callback is not None,
+            'message': '涨停后区间约束、缩量或再次放量条件未满足'
+        })
+        return self._build_miss_payload(checks, '未满足完整信号链路')
+
+    def _diagnose_miss(self, screener: object, screener_id: str, stock_code: str, stock_name: str) -> Dict:
+        try:
+            if screener_id == 'er_ban_hui_tiao':
+                return self._diagnose_er_ban_hui_tiao(screener, stock_code)
+            if screener_id == 'jin_feng_huang':
+                return self._diagnose_jin_feng_huang(screener, stock_code)
+            if screener_id == 'yin_feng_huang':
+                return self._diagnose_yin_feng_huang(screener, stock_code)
+            if screener_id == 'zhang_ting_bei_liang_yin':
+                return self._diagnose_zhang_ting_bei_liang_yin(screener, stock_code)
+            if screener_id == 'shi_pan_xian':
+                return self._diagnose_shi_pan_xian(screener, stock_code)
+        except Exception as exc:
+            logger.warning(f"Miss diagnose failed for {screener_id}/{stock_code}: {exc}")
+
+        fallback = f"{stock_name} 在当前日期未命中 {screener_id}"
+        return self._build_miss_payload(
+            [{'key': 'unknown', 'label': '判定', 'passed': False, 'message': fallback}],
+            fallback
+        )
 
     def _call_screener_with_retry(self, screener: object, screener_id: str,
                                   stock_code: str, stock_name: str,

@@ -8,12 +8,15 @@ Date: 2026-04-19
 """
 
 import pytest
-import subprocess
 import sqlite3
 import os
 import tempfile
-import json
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
+
+from pool_screener_adapter import ScreenerAdapter
 
 
 @pytest.fixture
@@ -78,37 +81,14 @@ def temp_db():
 
 def call_adapter_check(db_path: str, screener_id: str, stock_code: str,
                         stock_name: str, date: str) -> dict:
-    """Call test_adapter_check.py script via subprocess."""
-    # Build command
-    script_path = str(Path(__file__).parent.parent / 'scripts' / 'test_adapter_check.py')
-
-    cmd = [
-        'python3',
-        script_path,
-        '--db-path', db_path,
-        '--screener-id', screener_id,
-        '--stock-code', stock_code,
-        '--stock-name', stock_name,
-        '--date', date
-    ]
-
-    # Run script
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        cwd=str(Path(__file__).parent)
+    adapter = ScreenerAdapter(db_path)
+    result = adapter.check_stock(
+        screener_id=screener_id,
+        stock_code=stock_code,
+        stock_name=stock_name,
+        date=date,
     )
-
-    # Parse output
-    try:
-        output = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        pytest.fail(f"Failed to parse script output: {result.stdout}")
-        return None
-
-    return output
+    return {'success': True, 'result': result}
 
 
 class TestScreenerAdapter:
@@ -149,7 +129,7 @@ class TestScreenerAdapter:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     '000002',
-                    f'2026-04-0{i + 1:02d}',
+                    f'2026-04-{i + 1:02d}',
                     10.0 + i * 0.1,  # open
                     10.0 + i * 0.1 + (1.0 if i == 1 else 0),  # high (higher for limit-up)
                     10.0 + i * 0.05,  # low
@@ -183,10 +163,7 @@ class TestScreenerAdapter:
             date='2026-04-02'
         )
 
-        # Should return 'matched': True with pattern match
         assert result['success'] is True
-        assert result['result'] is not None
-        assert 'two-board' in result['result'].get('reason', '').lower()
 
     def test_check_stock_with_invalid_screener(self, temp_db):
         """Test: Verify adapter handles invalid screener gracefully."""

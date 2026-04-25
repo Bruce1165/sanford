@@ -95,12 +95,26 @@ SQLAlchemy 数据模型：
 /api/screeners          → get_all_screeners()
 /api/screeners/<name>     → get_screener(name)
 /api/screeners/<name>/run  → run_screener(name)
-/api/results             → get_results(...)
+/api/results             → get_screener_results(...)  # requires screener + date
+/api/trading-day         → is_trading_day(...)
 /api/stock/<code>/chart → get_stock_data_for_chart(...)
 /api/screeners/<name>/config → get/update_screener_config(...)
 /api/health              → health_check()
 /assets/<path>            → serve_assets()
 ```
+
+### 筛选器运行与日期语义（严格策略）
+
+- **requested_date**：调用方传入的日期（YYYY-MM-DD）
+- **effective_trade_date**：实际交易日（必须是交易日；严格模式下与 requested_date 相同）
+- `GET /api/trading-day?date=YYYY-MM-DD`
+  - 返回 `is_trading_day` 与 `recent_trading_day`（基于 `daily_prices`：`MAX(trade_date) <= requested_date`）。
+- `POST /api/screeners/<name>/run`
+  - 若 `requested_date` 非交易日：返回 `400`，body 含 `{ error, requested_date, effective_trade_date }`。
+  - 若为交易日：正常运行，响应中包含 `{ requested_date, effective_trade_date }`。
+- `GET /api/results?screener=<name>&date=YYYY-MM-DD`
+  - `screener` 必填；`date` 必须为交易日。
+  - 非交易日返回 `400`（同样包含 `{ error, requested_date, effective_trade_date }`）。
 
 **完整 API 文档请参考**: [08_API_REFERENCE.md](08_API_REFERENCE.md)
 

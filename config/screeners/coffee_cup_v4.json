@@ -7,7 +7,7 @@
     "updated_at": "2026-04-17"
   },
   "display_name": "咖啡杯柄V4",
-  "description": "检测标准的咖啡杯形态（V4版本）：两个杯沿高点、温和上涨细分为震荡期和快速上涨期、杯柄条件优化",
+  "description": "检测标准的咖啡杯形态（V4版本）：两个杯沿高点、固定快速下跌与快速上涨窗口、杯柄条件优化",
   "category": "内部公式",
   "parameters": {
     "RIM_INTERVAL_MIN": {
@@ -41,6 +41,26 @@
       "display_name": "杯沿价格匹配度",
       "group": "杯沿相关"
     },
+    "RIGHT_RIM_SEARCH_DAYS": {
+      "type": "int",
+      "value": 13,
+      "default": 13,
+      "min": 1,
+      "max": 60,
+      "description": "右侧杯沿向左搜索局部高点时使用的窗口天数",
+      "display_name": "右杯沿搜索天数",
+      "group": "杯沿相关"
+    },
+    "HISTORY_BUFFER_DAYS": {
+      "type": "int",
+      "value": 50,
+      "default": 50,
+      "min": 0,
+      "max": 300,
+      "description": "计算所需历史数据时额外增加的缓冲天数",
+      "display_name": "历史缓冲天数",
+      "group": "基础设置"
+    },
     "CUP_DEPTH_MIN": {
       "type": "float",
       "value": 0.05,
@@ -63,118 +83,25 @@
       "display_name": "杯深最大值",
       "group": "杯体相关"
     },
-    "BOTTOM_OSCILLATE_MIN": {
+    "RAPID_DECLINE_DAYS": {
       "type": "int",
-      "value": 10,
-      "default": 10,
-      "min": 5,
-      "max": 20,
-      "description": "杯底区域的最少震荡天数",
-      "display_name": "杯底震荡最小天数",
+      "value": 12,
+      "default": 12,
+      "min": 1,
+      "max": 120,
+      "description": "快速下跌阶段交易日长度",
+      "display_name": "快速下跌天数",
       "group": "杯体相关"
     },
-    "BOTTOM_OSCILLATE_MAX": {
+    "RAPID_ASCENT_DAYS": {
       "type": "int",
-      "value": 20,
-      "default": 20,
-      "min": 15,
-      "max": 30,
-      "description": "杯底区域的最多震荡天数",
-      "display_name": "杯底震荡最大天数",
+      "value": 12,
+      "default": 12,
+      "min": 1,
+      "max": 120,
+      "description": "快速上涨阶段交易日长度",
+      "display_name": "快速上涨天数",
       "group": "杯体相关"
-    },
-    "RAPID_DECLINE_MIN": {
-      "type": "int",
-      "value": 5,
-      "default": 7,
-      "min": 2,
-      "max": 5,
-      "description": "快速下调的最少天数",
-      "display_name": "快速下调最小天数",
-      "group": "杯体相关"
-    },
-    "RAPID_DECLINE_MAX": {
-      "type": "int",
-      "value": 60,
-      "default": 45,
-      "min": 5,
-      "max": 10,
-      "description": "快速下调的最多天数",
-      "display_name": "快速下调最大天数",
-      "group": "杯体相关"
-    },
-    "ASCENT_OSCILLATE_MIN": {
-      "type": "int",
-      "value": 15,
-      "default": 15,
-      "min": 10,
-      "max": 30,
-      "description": "温和上涨震荡期的最少天数",
-      "display_name": "震荡期最小天数",
-      "group": "温和上涨-震荡期"
-    },
-    "ASCENT_OSCILLATE_MAX": {
-      "type": "int",
-      "value": 30,
-      "default": 30,
-      "min": 20,
-      "max": 50,
-      "description": "温和上涨震荡期的最多天数",
-      "display_name": "震荡期最大天数",
-      "group": "温和上涨-震荡期"
-    },
-    "OSCILLATE_PRICE_FLOOR_PCT": {
-      "type": "float",
-      "value": 1.05,
-      "default": 1.05,
-      "min": 1.02,
-      "max": 1.15,
-      "step": 0.01,
-      "description": "震荡期价格不低于杯底的倍数",
-      "display_name": "震荡期最低价格限制",
-      "group": "温和上涨-震荡期"
-    },
-    "OSCILLATE_PRICE_CEIL_PCT": {
-      "type": "float",
-      "value": 0.9,
-      "default": 0.85,
-      "min": 0.75,
-      "max": 0.9,
-      "step": 0.01,
-      "description": "震荡期价格不高于杯沿的百分比",
-      "display_name": "震荡期最高价格限制",
-      "group": "温和上涨-震荡期"
-    },
-    "ASCENT_RAPID_MIN": {
-      "type": "int",
-      "value": 5,
-      "default": 13,
-      "min": 10,
-      "max": 15,
-      "description": "快速上涨期的最少天数（13-15天）",
-      "display_name": "快速上涨期最小天数",
-      "group": "温和上涨-快速上涨期"
-    },
-    "ASCENT_RAPID_MAX": {
-      "type": "int",
-      "value": 25,
-      "default": 15,
-      "min": 13,
-      "max": 18,
-      "description": "快速上涨期的最多天数",
-      "display_name": "快速上涨期最大天数",
-      "group": "温和上涨-快速上涨期"
-    },
-    "RAPID_ASCENT_ACCELERATION": {
-      "type": "float",
-      "value": 1.5,
-      "default": 1.5,
-      "min": 1.2,
-      "max": 2.0,
-      "step": 0.1,
-      "description": "快速上涨的加速度系数（指数因子）",
-      "display_name": "快速上涨加速系数",
-      "group": "温和上涨-快速上涨期"
     },
     "HANDLE_PERIOD_MIN": {
       "type": "int",
@@ -182,7 +109,7 @@
       "default": 5,
       "min": 3,
       "max": 8,
-      "description": "杯柄的最少天数",
+      "description": "杯柄整理期至少维持的交易日数；过短通常表示整理不充分，假突破风险更高",
       "display_name": "杯柄最小天数",
       "group": "杯柄"
     },
@@ -192,30 +119,9 @@
       "default": 20,
       "min": 15,
       "max": 30,
-      "description": "杯柄的最多天数",
+      "description": "杯柄整理期允许的最长交易日数；超过该值通常表示形态拖沓、启动力度不足",
       "display_name": "杯柄最大天数",
       "group": "杯柄"
-    },
-    "HANDLE_MAX_DROP_PCT": {
-      "type": "float",
-      "value": 0.5,
-      "default": 0.5,
-      "min": 0.3,
-      "max": 0.7,
-      "step": 0.1,
-      "description": "杯柄最大下跌幅度占杯深的比例（默认为杯深的一半）",
-      "display_name": "杯柄下跌限制",
-      "group": "杯柄"
-    },
-    "VOLUME_COMPARISON_DAYS": {
-      "type": "int",
-      "value": 13,
-      "default": 13,
-      "min": 10,
-      "max": 20,
-      "description": "左右杯沿前后用于对比的天数",
-      "display_name": "成交量对比天数",
-      "group": "成交量"
     },
     "VOLUME_RATIO_THRESHOLD": {
       "type": "float",
@@ -224,31 +130,41 @@
       "min": 0.8,
       "max": 1.5,
       "step": 0.1,
-      "description": "右侧杯沿前N天平均 / 左侧杯沿后N天平均 的最小倍数",
+      "description": "右侧杯沿前一段时间的平均成交量，相对左侧杯沿后一段时间平均成交量，至少要达到的倍数",
       "display_name": "成交量倍数要求",
       "group": "成交量"
     },
-    "MIN_TURNOVER": {
+    "DECLINE_AMOUNT_MAX_RATIO": {
       "type": "float",
-      "value": 5.0,
-      "default": 5.0,
-      "min": 2.0,
-      "max": 10.0,
-      "step": 0.5,
-      "description": "突破日的最小换手率要求",
-      "display_name": "最小换手率（%）",
-      "group": "其他"
+      "value": 0.5,
+      "default": 0.5,
+      "min": 0.0,
+      "max": 2.0,
+      "step": 0.01,
+      "description": "快速下跌阶段总成交额，相对快速上涨阶段总成交额允许的最大比例",
+      "display_name": "下跌成交额上限系数",
+      "group": "第4轮-成交额"
     },
-    "MIN_PCT_CHANGE": {
+    "SAFETY_LEVEL_DEPTH_RATIO": {
       "type": "float",
-      "value": 2.0,
-      "default": 2.0,
-      "min": 1.0,
-      "max": 5.0,
-      "step": 0.5,
-      "description": "突破日的最小涨幅要求（确认阳线）",
-      "display_name": "最小涨幅（%）",
-      "group": "其他"
+      "value": 0.5,
+      "default": 0.5,
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.01,
+      "description": "安全水位在杯深中的位置比例；值越高，对价格站稳要求越高",
+      "display_name": "安全水位杯深比例",
+      "group": "第5轮-价格质量"
+    },
+    "RECENT_LOW_LOOKBACK_DAYS": {
+      "type": "int",
+      "value": 18,
+      "default": 18,
+      "min": 1,
+      "max": 120,
+      "description": "判断当前收盘价是否处于近期低位时，向前回看的交易日天数",
+      "display_name": "最近低点检查天数",
+      "group": "第5轮-价格质量"
     },
     "MA5_TREND_DAYS": {
       "type": "int",
@@ -256,8 +172,28 @@
       "default": 21,
       "min": 10,
       "max": 30,
-      "description": "检查MA5趋势的天数（左侧杯沿前N天）",
+      "description": "判断左侧杯沿前短期均线方向时使用的交易日天数",
       "display_name": "MA5趋势检查天数",
+      "group": "其他"
+    },
+    "MA_TREND_WINDOW": {
+      "type": "int",
+      "value": 5,
+      "default": 5,
+      "min": 1,
+      "max": 60,
+      "description": "用于判断价格趋势的均线周期天数",
+      "display_name": "趋势均线窗口",
+      "group": "其他"
+    },
+    "MA_TREND_MIN_VALID_POINTS": {
+      "type": "int",
+      "value": 10,
+      "default": 10,
+      "min": 1,
+      "max": 200,
+      "description": "进行趋势判断时，均线至少需要的有效数据点数量",
+      "display_name": "趋势最少有效点",
       "group": "其他"
     },
     "MA_SHORT": {
@@ -266,7 +202,7 @@
       "default": 50,
       "min": 20,
       "max": 60,
-      "description": "短期移动平均线天数",
+      "description": "短期趋势参考线的周期天数",
       "display_name": "短期均线周期",
       "group": "其他"
     },
@@ -276,7 +212,7 @@
       "default": 150,
       "min": 100,
       "max": 200,
-      "description": "中期移动平均线天数",
+      "description": "中期趋势参考线的周期天数",
       "display_name": "中期均线周期",
       "group": "其他"
     },
@@ -286,7 +222,7 @@
       "default": 200,
       "min": 150,
       "max": 250,
-      "description": "长期移动平均线天数",
+      "description": "长期趋势参考线的周期天数",
       "display_name": "长期均线周期",
       "group": "其他"
     }

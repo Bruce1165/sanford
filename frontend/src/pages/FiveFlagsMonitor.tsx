@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 interface FiveFlagsHealth {
   status: string;
@@ -69,6 +69,7 @@ interface TimelineDetail {
   reason_miss?: string;
   failed_checks?: FailedCheck[];
   first_failed_check?: FailedCheck | null;
+  diagnostic_hints?: string[];
   close_price: number;
   pool_id: number | null;
   created_at: string | null;
@@ -82,6 +83,7 @@ interface TimelineCell {
   reason_miss: string;
   failed_checks?: FailedCheck[];
   first_failed_check?: FailedCheck | null;
+  diagnostic_hints?: string[];
 }
 
 interface TimelineEntry {
@@ -124,6 +126,7 @@ interface CellDiagnosisResponse {
   reason_miss?: string;
   failed_checks?: FailedCheck[];
   first_failed_check?: FailedCheck | null;
+  diagnostic_hints?: string[];
   daily_quote?: {
     trade_date: string;
     open: number;
@@ -173,6 +176,37 @@ interface ManualRunResponse {
   error?: string;
 }
 
+interface QueueJob {
+  job_id: string;
+  status: 'queued' | 'started' | 'completed' | 'failed' | string;
+  run_id?: string | null;
+  error?: string | null;
+}
+
+interface QueueDetailResponse {
+  job: QueueJob;
+}
+
+interface RunFeedbackDialog {
+  visible: boolean;
+  tone: 'info' | 'success' | 'warning' | 'error';
+  title: string;
+  message: string;
+}
+
+interface CronLogBlock {
+  path: string;
+  exists: boolean;
+  updated_at: string | null;
+  lines: string[];
+}
+
+interface CronLogsResponse {
+  tail: number;
+  stdout: CronLogBlock;
+  stderr: CronLogBlock;
+}
+
 interface PoolListResponse {
   items: Array<{ id?: number }>;
   total: number;
@@ -198,6 +232,7 @@ function extractCellDiagnosisFromTimeline(
     reason_miss: cell.reason_miss || '',
     failed_checks: cell.failed_checks || [],
     first_failed_check: cell.first_failed_check || null,
+    diagnostic_hints: cell.diagnostic_hints || [],
     daily_quote: quote,
     price: quote?.close,
   };
@@ -265,13 +300,27 @@ function getFailedCheckGroupLabel(check: FailedCheck): string {
   return check.label || check.key || '其他条件';
 }
 
-async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`HTTP ${res.status}: ${text.slice(0, 120)}`);
+async function fetchJson<T>(url: string, init?: RequestInit, timeoutMs = 12000): Promise<T> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status}: ${text.slice(0, 120)}`);
+    }
+    return res.json() as Promise<T>;
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      throw new Error(`请求超时(${Math.round(timeoutMs / 1000)}s): ${url}`);
+    }
+    throw e;
+  } finally {
+    window.clearTimeout(timer);
   }
-  return res.json() as Promise<T>;
 }
 
 export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 'light' }) {
@@ -310,6 +359,8 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
   const [windowEnd, setWindowEnd] = useState(today);
   const [timeline, setTimeline] = useState<TimelineResponse | null>(null);
   const [historyTimeline, setHistoryTimeline] = useState<TimelineResponse | null>(null);
+  const [historyTimelineLoaded, setHistoryTimelineLoaded] = useState(false);
+  const [historyTimelineLoading, setHistoryTimelineLoading] = useState(false);
   const [hoverCell, setHoverCell] = useState<{ date: string; screenerKey: string } | null>(null);
   const [pinnedCell, setPinnedCell] = useState<{ date: string; screenerKey: string } | null>(null);
   const [cellDiagCache, setCellDiagCache] = useState<Record<string, CellDiagnosisResponse>>({});
@@ -320,6 +371,17 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
   const [forceManualRun, setForceManualRun] = useState(false);
   const [actionHint, setActionHint] = useState<string | null>(null);
   const [showUploadHelp, setShowUploadHelp] = useState(false);
+  const [runFeedbackDialog, setRunFeedbackDialog] = useState<RunFeedbackDialog>({
+    visible: false,
+    tone: 'info',
+    title: '',
+    message: '',
+  });
+  const [cronLogs, setCronLogs] = useState<CronLogsResponse | null>(null);
+  const [cronLogsLoading, setCronLogsLoading] = useState(false);
+  const [cronLogsCollapsed, setCronLogsCollapsed] = useState(true);
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
+  const manualRunWatchTokenRef = useRef(0);
 
   const loadData = useCallback(async () => {
     try {
@@ -398,9 +460,135 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
     }
   }, []);
 
+  const loadCronLogs = useCallback(async () => {
+    setCronLogsLoading(true);
+    try {
+      const resp = await fetchJson<CronLogsResponse>('/api/five-flags/cron-logs?tail=120');
+      setCronLogs(resp);
+    } catch (e) {
+      setActionHint(e instanceof Error ? e.message : 'Cron 日志加载失败');
+    } finally {
+      setCronLogsLoading(false);
+    }
+  }, []);
+
+  const watchManualRunResult = useCallback(async (jobId: string, initialRunId?: string | null) => {
+    const watchToken = ++manualRunWatchTokenRef.current;
+    let runId = initialRunId || null;
+    const maxAttempts = 120;
+    const sleepMs = 3000;
+
+    for (let i = 0; i < maxAttempts; i += 1) {
+      if (watchToken !== manualRunWatchTokenRef.current) return;
+      try {
+        const queueResp = await fetchJson<QueueDetailResponse>(`/api/five-flags/queue/${encodeURIComponent(jobId)}`);
+        const job = queueResp.job;
+        if (job?.run_id) runId = job.run_id;
+
+        if (job?.status === 'queued') {
+          setRunFeedbackDialog({
+            visible: true,
+            tone: 'info',
+            title: '排队中',
+            message: `任务已提交，等待调度执行。\njob: ${jobId}`,
+          });
+        } else if (job?.status === 'started') {
+          let progressMsg = `任务已启动，正在执行。\njob: ${jobId}`;
+          if (runId) {
+            try {
+              const detail = await fetchJson<RunDetailResponse>(`/api/five-flags/runs/${encodeURIComponent(runId)}`);
+              const merged: RunItem = {
+                ...detail.run,
+                progress: detail.progress || detail.run.progress,
+              };
+              setLiveRun(merged);
+              const processed = Number(merged.processed_stocks || merged.progress?.processed_stocks || 0);
+              const total = Number(merged.total_stocks || merged.progress?.total_stocks || 0);
+              const percent = Number(merged.progress?.percent || 0);
+              progressMsg = `任务已启动，正在执行。\njob: ${jobId}\nrun: ${runId}\n进度: ${processed}/${total} (${percent.toFixed(2)}%)`;
+            } catch {
+              // Keep queue-only progress when run detail is transiently unavailable.
+            }
+          }
+          setRunFeedbackDialog({
+            visible: true,
+            tone: 'info',
+            title: '运行中',
+            message: progressMsg,
+          });
+        } else if (job?.status === 'completed') {
+          let doneMsg = '运行成功。\n筛查总数: -\n命中总数: -';
+          if (runId) {
+            try {
+              const detail = await fetchJson<RunDetailResponse>(`/api/five-flags/runs/${encodeURIComponent(runId)}`);
+              const merged: RunItem = {
+                ...detail.run,
+                progress: detail.progress || detail.run.progress,
+              };
+              setLiveRun(merged);
+              const screened = Number(merged.processed_stocks || merged.progress?.processed_stocks || 0);
+              const matches = Number(merged.total_matches || 0);
+              const failed = Number(merged.failed_stocks || 0);
+              if (screened === 0 && matches === 0 && failed === 0) {
+                const skipMsg = '不运行。\n原因: 无可筛查数据（已是最新或无增量）。';
+                setActionHint('不运行：无可筛查数据（已是最新或无增量）。');
+                setRunFeedbackDialog({
+                  visible: true,
+                  tone: 'warning',
+                  title: '无需运行',
+                  message: skipMsg,
+                });
+                void loadData();
+                return;
+              }
+              doneMsg = `运行成功。\n筛查总数: ${screened}\n命中总数: ${matches}`;
+            } catch {
+              doneMsg = '运行成功。\n筛查总数: -\n命中总数: -';
+            }
+          }
+          setActionHint(doneMsg.replace(/\n/g, ' · '));
+          setRunFeedbackDialog({
+            visible: true,
+            tone: 'success',
+            title: '运行成功',
+            message: doneMsg,
+          });
+          void loadData();
+          return;
+        } else if (job?.status === 'failed') {
+          const failedReason = job.error || '请查看 Cron/后端日志定位原因。';
+          const failedMsg = `运行失败。\n原因: ${failedReason}`;
+          setActionHint(`运行失败：${failedReason}`);
+          setRunFeedbackDialog({
+            visible: true,
+            tone: 'error',
+            title: '运行失败',
+            message: failedMsg,
+          });
+          void loadData();
+          return;
+        }
+      } catch {
+        // Keep polling on transient network/backend errors.
+      }
+      await new Promise<void>((resolve) => {
+        window.setTimeout(resolve, sleepMs);
+      });
+    }
+
+    if (watchToken !== manualRunWatchTokenRef.current) return;
+    setRunFeedbackDialog({
+      visible: true,
+      tone: 'warning',
+      title: '结果待确认',
+      message: `任务已提交但在跟踪窗口内未结束，请稍后在运行区或日志区查看。\njob: ${jobId}`,
+    });
+  }, [loadData]);
+
   useEffect(() => {
     void loadData();
-  }, [loadData]);
+    void loadCronLogs();
+  }, [loadData, loadCronLogs]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -408,6 +596,13 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
     }, 15000);
     return () => clearInterval(timer);
   }, [loadData]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void loadCronLogs();
+    }, 30000);
+    return () => clearInterval(timer);
+  }, [loadCronLogs]);
 
   const activeRun = liveRun || runs[0] || null;
   const shouldLivePoll = activeRun?.status === 'running' || activeRun?.status === 'accepted';
@@ -474,22 +669,31 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
   }, [selectedStock, windowStart, windowEnd]);
 
   useEffect(() => {
-    if (!selectedStock) {
+    setHistoryTimeline(null);
+    setHistoryTimelineLoaded(false);
+    setHistoryTimelineLoading(false);
+  }, [selectedStock]);
+
+  const loadHistoryTimeline = useCallback(async () => {
+    if (!selectedStock || historyTimelineLoading) return;
+    setHistoryTimelineLoading(true);
+    try {
+      const params = new URLSearchParams({
+        stock_code: selectedStock,
+        from: '1990-01-01',
+        to: today,
+        include_miss_details: '0',
+      });
+      const resp = await fetchJson<TimelineResponse>(`/api/five-flags/timeline?${params.toString()}`);
+      setHistoryTimeline(resp);
+      setHistoryTimelineLoaded(true);
+    } catch {
       setHistoryTimeline(null);
-      return;
+      setHistoryTimelineLoaded(false);
+    } finally {
+      setHistoryTimelineLoading(false);
     }
-    const params = new URLSearchParams({
-      stock_code: selectedStock,
-      from: '1990-01-01',
-      to: today,
-      include_miss_details: '0',
-    });
-    void fetchJson<TimelineResponse>(
-      `/api/five-flags/timeline?${params.toString()}`
-    )
-      .then(setHistoryTimeline)
-      .catch(() => setHistoryTimeline(null));
-  }, [selectedStock, today]);
+  }, [historyTimelineLoading, selectedStock, today]);
 
   useEffect(() => {
     if (selectedStock || poolStocks.length === 0) return;
@@ -603,6 +807,19 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
         if (!key || cell.hit) return;
         const first = cell.first_failed_check;
         if (first && !first.passed) map.set(`${entry.date}|${key}`, first);
+      });
+    });
+    return map;
+  }, [windowedTimeline]);
+
+  const missHintMap = useMemo(() => {
+    const map = new Map<string, string[]>();
+    windowedTimeline.forEach((entry) => {
+      entry.items?.forEach((cell) => {
+        const key = resolveScreenerKey(cell.screener_id);
+        if (!key || cell.hit) return;
+        const hints = (cell.diagnostic_hints || []).filter((x) => String(x || '').trim().length > 0);
+        if (hints.length > 0) map.set(`${entry.date}|${key}`, hints);
       });
     });
     return map;
@@ -752,18 +969,35 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
   };
 
   const handleManualRun = async () => {
-    if (!forceManualRun && !hasUnprocessedPools) {
-      setActionHint('当前无未处理股票，无法手动筛查。');
+    if (manualRunning) {
+      setRunFeedbackDialog({
+        visible: true,
+        tone: 'info',
+        title: '任务提交中',
+        message: '手动筛查正在提交，请稍候查看最新状态。',
+      });
       return;
     }
     setManualRunning(true);
     setActionHint(null);
+    setRunFeedbackDialog({
+      visible: true,
+      tone: 'info',
+      title: '运行中',
+      message: '正在提交手动筛查任务...',
+    });
     try {
       let payload: { pool_ids?: number[] } = {};
       if (forceManualRun) {
         const allPoolIds = await fetchAllPoolIds();
         if (allPoolIds.length === 0) {
           setActionHint('强制筛查未启动：股票池为空。');
+          setRunFeedbackDialog({
+            visible: true,
+            tone: 'warning',
+            title: '无需运行',
+            message: '强制筛查未启动：股票池为空。',
+          });
           return;
         }
         payload = { pool_ids: allPoolIds };
@@ -774,7 +1008,40 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
         body: JSON.stringify(payload),
       });
       if (resp.status === 'skipped') {
-        setActionHint(`未启动：${resp.reason || '不满足就绪条件'}`);
+        const reason = String(resp.reason || '');
+        if (reason === 'up_to_date') {
+          setActionHint('未启动：已筛到最新交易日，无需补跑。');
+          setRunFeedbackDialog({
+            visible: true,
+            tone: 'warning',
+            title: '无需运行',
+            message: '已筛到最新交易日，无需补跑。',
+          });
+        } else if (reason === 'no_pools') {
+          setActionHint('未启动：股票池为空。');
+          setRunFeedbackDialog({
+            visible: true,
+            tone: 'warning',
+            title: '无需运行',
+            message: '股票池为空，当前无需运行。',
+          });
+        } else if (reason === 'no_price_data') {
+          setActionHint('未启动：行情数据为空，无法确定最近交易日。');
+          setRunFeedbackDialog({
+            visible: true,
+            tone: 'warning',
+            title: '无需运行',
+            message: '行情数据为空，无法确定最近交易日。',
+          });
+        } else {
+          setActionHint(`未启动：${resp.reason || '不满足就绪条件'}`);
+          setRunFeedbackDialog({
+            visible: true,
+            tone: 'warning',
+            title: '无需运行',
+            message: `未启动：${resp.reason || '不满足就绪条件'}`,
+          });
+        }
       } else {
         const runMsg = [
           forceManualRun ? '强制筛查已提交' : '手动筛查已提交',
@@ -782,10 +1049,27 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
           resp.status ? `状态: ${resp.status}` : '',
         ].filter(Boolean).join(' · ');
         setActionHint(runMsg);
+        setRunFeedbackDialog({
+          visible: true,
+          tone: 'success',
+          title: '提交成功',
+          message: `${runMsg || '任务已提交。'}\n正在跟踪执行结果...`,
+        });
+        if (resp.job_id) {
+          void watchManualRunResult(resp.job_id, resp.run_id || null);
+        }
       }
-      await loadData();
+      // Do not keep the button disabled while waiting for full data refresh.
+      void loadData();
     } catch (e) {
-      setActionHint(e instanceof Error ? e.message : '手动筛查启动失败');
+      const errMsg = e instanceof Error ? e.message : '手动筛查启动失败';
+      setActionHint(errMsg);
+      setRunFeedbackDialog({
+        visible: true,
+        tone: 'error',
+        title: '提交失败',
+        message: errMsg,
+      });
     } finally {
       setManualRunning(false);
     }
@@ -849,9 +1133,11 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
     const reasonMissRaw = missReasonMap.get(`${activeCell.date}|${activeCell.screenerKey}`) || '';
     const failedChecksRaw = missCheckMap.get(`${activeCell.date}|${activeCell.screenerKey}`) || [];
     const firstFailedRaw = missFirstCheckMap.get(`${activeCell.date}|${activeCell.screenerKey}`) || null;
+    const diagnosticHintsRaw = missHintMap.get(`${activeCell.date}|${activeCell.screenerKey}`) || [];
     const reasonMiss = reasonMissRaw || (diag?.reason_miss || '');
     const failedChecks = failedChecksRaw.length > 0 ? failedChecksRaw : (diag?.failed_checks || []);
     const firstFailedCheck = firstFailedRaw || diag?.first_failed_check || null;
+    const diagnosticHints = diagnosticHintsRaw.length > 0 ? diagnosticHintsRaw : (diag?.diagnostic_hints || []);
     const quote = quoteByDate.get(activeCell.date) || diag?.daily_quote || null;
     return {
       date: activeCell.date,
@@ -859,6 +1145,7 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
       hit,
       failedChecks,
       firstFailedCheck,
+      diagnosticHints,
       quote,
       stockName: selectedStockMeta?.name || diag?.stock_name || selectedStock,
       stockCode: selectedStockMeta?.code || selectedStock,
@@ -867,7 +1154,7 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
         ? (reasonHit || '命中该筛选器，接口未返回更详细的命中解释。')
         : (reasonMiss || `当日未命中「${target.label}」筛选条件。`),
     };
-  }, [activeCell, pinnedCell, hitKeySet, detailReasonMap, missReasonMap, missCheckMap, missFirstCheckMap, quoteByDate, selectedStock, selectedStockMeta, cellDiagCache]);
+  }, [activeCell, pinnedCell, hitKeySet, detailReasonMap, missReasonMap, missCheckMap, missFirstCheckMap, missHintMap, quoteByDate, selectedStock, selectedStockMeta, cellDiagCache]);
 
   const groupedFailedChecks = useMemo(() => {
     if (!hoverPayload || hoverPayload.hit) return [] as Array<{ label: string; items: FailedCheck[] }>;
@@ -880,6 +1167,25 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
         order.push(label);
       }
       grouped.get(label)?.push(check);
+    });
+    return order.map((label) => ({ label, items: grouped.get(label) || [] }));
+  }, [hoverPayload]);
+
+  const groupedDiagnosticHints = useMemo(() => {
+    if (!hoverPayload || hoverPayload.hit) return [] as Array<{ label: string; items: string[] }>;
+    const order: string[] = [];
+    const grouped = new Map<string, string[]>();
+    (hoverPayload.diagnosticHints || []).forEach((rawHint) => {
+      const text = String(rawHint || '').trim();
+      if (!text) return;
+      const matched = text.match(/^([^:：]+)[:：]\s*(.+)$/);
+      const label = matched ? matched[1].trim() : '附加提示';
+      const content = matched ? matched[2].trim() : text;
+      if (!grouped.has(label)) {
+        grouped.set(label, []);
+        order.push(label);
+      }
+      grouped.get(label)?.push(content);
     });
     return order.map((label) => ({ label, items: grouped.get(label) || [] }));
   }, [hoverPayload]);
@@ -1034,6 +1340,21 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
                 <option value={15}>15</option>
                 <option value={20}>20</option>
               </select>
+              <button
+                onClick={() => setLeftPanelCollapsed((prev) => !prev)}
+                style={{
+                  border: `1px solid ${palette.inputBorder}`,
+                  color: palette.dimText,
+                  background: 'transparent',
+                  borderRadius: 999,
+                  padding: '2px 9px',
+                  cursor: 'pointer',
+                  fontSize: 11,
+                  fontWeight: 700,
+                }}
+              >
+                {leftPanelCollapsed ? '展开左区' : '收起左区'}
+              </button>
               {selectedStockMeta && (
                 <span style={{ marginLeft: 'auto', fontSize: 11, color: palette.dimText }}>
                   当前股票: <span style={{ color: palette.text }}>{selectedStockMeta.code} {selectedStockMeta.name} {selectedStockMeta.sectorCompound || '—'}</span>
@@ -1042,75 +1363,99 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
             </div>
           </div>
 
-          <div style={{ minHeight: 0, overflow: 'hidden', display: 'grid', gridTemplateColumns: '270px 1fr' }}>
-            <div style={{ borderRight: `1px solid ${palette.border}`, padding: 10, minWidth: 0 }}>
-              <div style={{ fontSize: 11, color: palette.title, letterSpacing: 1, marginBottom: 8 }}>STOCK WHEEL LIST</div>
-              <div style={{ border: `1px solid ${palette.border}`, borderRadius: 6, overflow: 'hidden', background: palette.panelBg }}>
-                <div style={{ maxHeight: visibleStockCount * 32, overflowY: 'auto' }}>
-                  {filteredStockOptions.length === 0 ? (
-                    <div style={{ padding: 10, fontSize: 12, color: palette.dimText }}>无股票</div>
-                  ) : (
-                    filteredStockOptions.map((item) => {
-                      const active = item.code === selectedStock;
-                      return (
-                        <button
-                          key={item.code}
-                          onClick={() => {
-                            setSelectedStock(item.code);
-                            setHoverCell(null);
-                            setPinnedCell(null);
-                          }}
-                          title={`${item.code} · ${item.hasHits ? '已被五旗选中过' : '尚未被五旗选中'}`}
-                          style={{
-                            width: '100%',
-                            height: 32,
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            border: 'none',
-                            borderBottom: `1px solid ${palette.border}`,
-                            background: active ? (isLight ? 'rgba(30,64,175,0.08)' : 'rgba(255,203,5,0.12)') : 'transparent',
-                            color: active ? palette.text : palette.dimText,
-                            cursor: 'pointer',
-                            padding: '0 8px',
-                            fontSize: 12,
-                            textAlign: 'left',
-                          }}
-                        >
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
-                            <span style={{ fontWeight: 700, color: active ? palette.badge : palette.text }}>{item.code}</span>
-                            <span
-                              style={{
-                                width: 9,
-                                height: 9,
-                                borderRadius: 999,
-                                background: item.hasHits ? '#22c55e' : '#94a3b8',
-                                border: item.hasHits ? '1px solid #166534' : '1px solid #475569',
-                                boxShadow: item.hasHits ? '0 0 0 2px rgba(34,197,94,0.28)' : 'none',
-                                display: 'inline-block',
-                                flexShrink: 0,
-                              }}
-                            />
-                          </span>
-                          <span style={{ marginLeft: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {item.name}
-                            <span
-                              style={{
-                                marginLeft: 8,
-                                fontSize: 10,
-                                color: item.hasHits ? '#22c55e' : palette.dimText,
-                                fontWeight: item.hasHits ? 700 : 500,
-                              }}
-                            >
-                              {item.hasHits ? '命中' : '未命中'}
-                            </span>
-                          </span>
-                        </button>
-                      );
-                    })
-                  )}
-                </div>
+          <div style={{ minHeight: 0, overflow: 'hidden', display: 'grid', gridTemplateColumns: leftPanelCollapsed ? '36px 1fr' : '270px 1fr' }}>
+            <div style={{ borderRight: `1px solid ${palette.border}`, padding: leftPanelCollapsed ? '10px 4px' : 10, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: leftPanelCollapsed ? 'center' : 'space-between', marginBottom: 8 }}>
+                {!leftPanelCollapsed && (
+                  <div style={{ fontSize: 11, color: palette.title, letterSpacing: 1 }}>STOCK WHEEL LIST</div>
+                )}
+                <button
+                  onClick={() => setLeftPanelCollapsed((prev) => !prev)}
+                  style={{
+                    border: `1px solid ${palette.inputBorder}`,
+                    background: 'transparent',
+                    color: palette.text,
+                    borderRadius: 999,
+                    width: 24,
+                    height: 24,
+                    cursor: 'pointer',
+                    fontSize: 11,
+                    lineHeight: '22px',
+                    padding: 0,
+                  }}
+                  title={leftPanelCollapsed ? '展开左区' : '折叠左区'}
+                >
+                  {leftPanelCollapsed ? '▶' : '◀'}
+                </button>
               </div>
+              {!leftPanelCollapsed && (
+                <div style={{ border: `1px solid ${palette.border}`, borderRadius: 6, overflow: 'hidden', background: palette.panelBg }}>
+                  <div style={{ maxHeight: visibleStockCount * 32, overflowY: 'auto' }}>
+                    {filteredStockOptions.length === 0 ? (
+                      <div style={{ padding: 10, fontSize: 12, color: palette.dimText }}>无股票</div>
+                    ) : (
+                      filteredStockOptions.map((item) => {
+                        const active = item.code === selectedStock;
+                        return (
+                          <button
+                            key={item.code}
+                            onClick={() => {
+                              setSelectedStock(item.code);
+                              setHoverCell(null);
+                              setPinnedCell(null);
+                            }}
+                            title={`${item.code} · ${item.hasHits ? '已被五旗选中过' : '尚未被五旗选中'}`}
+                            style={{
+                              width: '100%',
+                              height: 32,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              border: 'none',
+                              borderBottom: `1px solid ${palette.border}`,
+                              background: active ? (isLight ? 'rgba(30,64,175,0.08)' : 'rgba(255,203,5,0.12)') : 'transparent',
+                              color: active ? palette.text : palette.dimText,
+                              cursor: 'pointer',
+                              padding: '0 8px',
+                              fontSize: 12,
+                              textAlign: 'left',
+                            }}
+                          >
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
+                              <span style={{ fontWeight: 700, color: active ? palette.badge : palette.text }}>{item.code}</span>
+                              <span
+                                style={{
+                                  width: 9,
+                                  height: 9,
+                                  borderRadius: 999,
+                                  background: item.hasHits ? '#22c55e' : '#94a3b8',
+                                  border: item.hasHits ? '1px solid #166534' : '1px solid #475569',
+                                  boxShadow: item.hasHits ? '0 0 0 2px rgba(34,197,94,0.28)' : 'none',
+                                  display: 'inline-block',
+                                  flexShrink: 0,
+                                }}
+                              />
+                            </span>
+                            <span style={{ marginLeft: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {item.name}
+                              <span
+                                style={{
+                                  marginLeft: 8,
+                                  fontSize: 10,
+                                  color: item.hasHits ? '#22c55e' : palette.dimText,
+                                  fontWeight: item.hasHits ? 700 : 500,
+                                }}
+                              >
+                                {item.hasHits ? '命中' : '未命中'}
+                              </span>
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             <div style={{ minWidth: 0, padding: 10, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
@@ -1129,19 +1474,18 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <button
                     onClick={() => { void handleManualRun(); }}
-                    disabled={manualRunning || (!hasUnprocessedPools && !forceManualRun)}
                     style={{
-                      border: `1px solid ${manualRunning || (!hasUnprocessedPools && !forceManualRun) ? palette.inputBorder : palette.badge}`,
-                      color: manualRunning || (!hasUnprocessedPools && !forceManualRun) ? palette.dimText : palette.badge,
+                      border: `1px solid ${palette.badge}`,
+                      color: palette.badge,
                       background: 'transparent',
                       borderRadius: 999,
                       padding: '2px 9px',
-                      cursor: manualRunning || (!hasUnprocessedPools && !forceManualRun) ? 'not-allowed' : 'pointer',
+                      cursor: 'pointer',
                       fontSize: 11,
                       fontWeight: 700,
                     }}
                   >
-                    {manualRunning ? '提交中...' : (forceManualRun ? '强制筛查' : '手动筛查')}
+                    {forceManualRun ? '强制筛查' : '手动筛查'}
                   </button>
                   <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: palette.dimText }}>
                     <input
@@ -1194,7 +1538,81 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
                   </div>
                 )}
               </div>
-              {!!selectedStock && historyStripDates.length > 0 && (
+              {runFeedbackDialog.visible && (
+                <div
+                  style={{
+                    position: 'fixed',
+                    inset: 0,
+                    background: 'rgba(0, 0, 0, 0.45)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 1200,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 'min(420px, calc(100vw - 24px))',
+                      borderRadius: 8,
+                      border: `1px solid ${palette.border}`,
+                      background: palette.panelBg,
+                      color: palette.text,
+                      boxShadow: '0 14px 34px rgba(0,0,0,0.35)',
+                      padding: 12,
+                    }}
+                  >
+                    <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>
+                      {runFeedbackDialog.title}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        lineHeight: 1.5,
+                        color: runFeedbackDialog.tone === 'error' ? palette.warnText : palette.dimText,
+                        whiteSpace: 'pre-wrap',
+                      }}
+                    >
+                      {runFeedbackDialog.message}
+                    </div>
+                    <div style={{ marginTop: 10, display: 'flex', justifyContent: 'flex-end' }}>
+                      <button
+                        onClick={() => setRunFeedbackDialog((prev) => ({ ...prev, visible: false }))}
+                        style={{
+                          border: `1px solid ${palette.inputBorder}`,
+                          color: palette.text,
+                          background: 'transparent',
+                          borderRadius: 6,
+                          padding: '4px 10px',
+                          cursor: 'pointer',
+                          fontSize: 12,
+                        }}
+                      >
+                        关闭
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {!!selectedStock && !historyTimelineLoaded && (
+                <div style={{ marginBottom: 8, border: `1px solid ${palette.border}`, borderRadius: 6, background: palette.panelBg, padding: '8px 10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, color: palette.dimText }}>全历史提示条按需加载（减少外网初次加载时延）</span>
+                  <button
+                    onClick={() => { void loadHistoryTimeline(); }}
+                    style={{
+                      border: `1px solid ${palette.inputBorder}`,
+                      color: palette.text,
+                      background: 'transparent',
+                      borderRadius: 999,
+                      padding: '2px 9px',
+                      cursor: 'pointer',
+                      fontSize: 11,
+                    }}
+                  >
+                    {historyTimelineLoading ? '加载中...' : '加载全历史提示条'}
+                  </button>
+                </div>
+              )}
+              {!!selectedStock && historyTimelineLoaded && historyStripDates.length > 0 && (
                 <div style={{ marginBottom: 8, border: `1px solid ${palette.border}`, borderRadius: 6, background: palette.panelBg, padding: '8px 10px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                     <span style={{ fontSize: 11, color: palette.dimText }}>全历史交易日提示条</span>
@@ -1360,6 +1778,21 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
                         首个失败条件: {hoverPayload.firstFailedCheck.label} - {hoverPayload.firstFailedCheck.message}
                       </div>
                     )}
+                    {!hoverPayload.hit && groupedDiagnosticHints.length > 0 && (
+                      <div style={{ marginTop: 8, fontSize: 12, color: detailBodyColor, lineHeight: 1.5 }}>
+                        <div style={{ color: palette.text, fontWeight: 700 }}>附加诊断提示</div>
+                        {groupedDiagnosticHints.map((group, idx) => (
+                          <details key={`${hoverPayload.date}-hint-group-${group.label}`} open={idx === 0} style={{ marginTop: 4 }}>
+                            <summary style={{ cursor: 'pointer', color: palette.text, fontWeight: 700 }}>{group.label}</summary>
+                            {group.items.map((hint, hidx) => (
+                              <div key={`${hoverPayload.date}-hint-${group.label}-${hidx}`} style={{ marginTop: 3, color: detailSecondaryColor }}>
+                                - {hint}
+                              </div>
+                            ))}
+                          </details>
+                        ))}
+                      </div>
+                    )}
                     {!hoverPayload.hit && groupedFailedChecks.length > 0 && (
                       <div style={{ marginTop: 8, fontSize: 12, color: detailBodyColor, lineHeight: 1.5 }}>
                         {groupedFailedChecks.map((group, idx) => (
@@ -1387,6 +1820,91 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
                       </div>
                     )}
                   </div>
+                )}
+              </div>
+              <div style={{ marginTop: 8, border: `1px solid ${palette.border}`, borderRadius: 6, background: palette.panelBg, padding: '8px 10px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                  <button
+                    onClick={() => setCronLogsCollapsed((prev) => !prev)}
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      color: palette.title,
+                      cursor: 'pointer',
+                      fontSize: 11,
+                      letterSpacing: 1,
+                      padding: 0,
+                      textAlign: 'left',
+                    }}
+                    title={cronLogsCollapsed ? '展开日志' : '折叠日志'}
+                  >
+                    {cronLogsCollapsed ? '▶' : '▼'} Cron 任务日志
+                  </button>
+                  <button
+                    onClick={() => { void loadCronLogs(); }}
+                    style={{
+                      border: `1px solid ${palette.inputBorder}`,
+                      color: palette.dimText,
+                      background: 'transparent',
+                      borderRadius: 999,
+                      padding: '2px 8px',
+                      cursor: 'pointer',
+                      fontSize: 11,
+                    }}
+                  >
+                    {cronLogsLoading ? '刷新中...' : '刷新'}
+                  </button>
+                </div>
+                {!cronLogsCollapsed && (
+                  <>
+                    <div style={{ fontSize: 11, color: palette.dimText, marginTop: 6, marginBottom: 6 }}>
+                      {cronLogs?.stdout?.updated_at ? `最近更新: ${cronLogs.stdout.updated_at}` : '暂无更新记录'}
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                      <div>
+                        <div style={{ fontSize: 11, color: palette.dimText, marginBottom: 4 }}>标准输出</div>
+                        <pre
+                          style={{
+                            margin: 0,
+                            maxHeight: 120,
+                            overflow: 'auto',
+                            background: palette.inputBg,
+                            border: `1px solid ${palette.inputBorder}`,
+                            borderRadius: 4,
+                            padding: 8,
+                            fontSize: 11,
+                            lineHeight: 1.35,
+                            color: palette.text,
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
+                          }}
+                        >
+                          {(cronLogs?.stdout?.lines || []).join('') || '暂无日志'}
+                        </pre>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 11, color: palette.dimText, marginBottom: 4 }}>错误输出</div>
+                        <pre
+                          style={{
+                            margin: 0,
+                            maxHeight: 120,
+                            overflow: 'auto',
+                            background: palette.inputBg,
+                            border: `1px solid ${palette.inputBorder}`,
+                            borderRadius: 4,
+                            padding: 8,
+                            fontSize: 11,
+                            lineHeight: 1.35,
+                            color: palette.warnText,
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
+                          }}
+                        >
+                          {(cronLogs?.stderr?.lines || []).join('') || '暂无错误日志'}
+                        </pre>
+                      </div>
+                    </div>
+                  </>
                 )}
               </div>
             </div>

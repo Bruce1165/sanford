@@ -1,8 +1,13 @@
 # Import test fixtures
 import pytest
+import os
+import sqlite3
+import sys
+import tempfile
 
 # Add scripts directory to path
 # scripts directory is in parent directory, so just add database
+sys.path.insert(0, 'scripts')
 sys.path.insert(0, 'scripts/database')
 
 from database.lao_ya_tou_pool import LaoYaTouPoolRepository

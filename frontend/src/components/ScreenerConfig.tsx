@@ -55,6 +55,7 @@ export const ScreenerConfig: React.FC<ScreenerConfigProps> = ({ screenerName, on
   const [unsavedChanges, setUnsavedChanges] = useState(false);
   const [originalValues, setOriginalValues] = useState<Record<string, any>>({});
   const [parameters, setParameters] = useState<ParameterRow[]>([]);
+  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
 
   // Helper to get clean name (remove '_screener' suffix)
   // Keep screenerName as-is for API calls (no suffix removal needed)
@@ -77,26 +78,34 @@ export const ScreenerConfig: React.FC<ScreenerConfigProps> = ({ screenerName, on
         return;
       }
 
-      console.log('[FRONTEND DEBUG] Setting config to state:', configData);
       setConfig(configData);
 
       // Convert parameters to table rows
-      const rows: ParameterRow[] = Object.entries(configData.parameters || {}).map(([key, param]: [string, any]) => ({
-        key: key,
-        name: key,
-        displayName: param.display_name,
-        description: param.description,
-        group: param.group || '其他',
-        type: param.type,
-        value: param.value,
-        minValue: param.min,
-        maxValue: param.max,
-        step: param.step || 1,
-        defaultValue: param.default,
-        isModified: param.value !== param.default
-      }));
+      const rows: ParameterRow[] = Object.entries(configData.parameters || {})
+        .map(([key, param]: [string, any]) => ({
+          key: key,
+          name: key,
+          displayName: param.display_name,
+          description: param.description,
+          group: param.group || '其他',
+          type: param.type,
+          value: param.value,
+          minValue: param.min,
+          maxValue: param.max,
+          step: typeof param.step === 'number'
+            ? param.step
+            : (param.type === 'float' ? 0.01 : 1),
+          defaultValue: param.default,
+          isModified: param.value !== param.default
+        }))
+        .sort((a, b) => {
+          const groupCompare = a.group.localeCompare(b.group, 'zh-CN');
+          if (groupCompare !== 0) return groupCompare;
+          return a.displayName.localeCompare(b.displayName, 'zh-CN');
+        });
 
       setParameters(rows);
+      setValidationErrors({});
 
       // Initialize original values
       const formValues: Record<string, any> = {};
@@ -113,14 +122,65 @@ export const ScreenerConfig: React.FC<ScreenerConfigProps> = ({ screenerName, on
     }
   };
 
-  const handleValueChange = (key: string, newValue: any) => {
-    const updated = parameters.map(p => {
-      if (p.key === key) {
-        return { ...p, value: newValue, isModified: newValue !== p.defaultValue };
+  const validateParameterRow = (row: ParameterRow): string | null => {
+    if (row.type === 'bool') {
+      if (typeof row.value !== 'boolean') return '布尔值无效';
+      return null;
+    }
+
+    if (row.type === 'string') {
+      if (row.value === null || row.value === undefined) return '字符串不能为空';
+      return null;
+    }
+
+    if (row.value === null || row.value === undefined || row.value === '') {
+      return '数值不能为空';
+    }
+    if (typeof row.value !== 'number' || Number.isNaN(row.value) || !Number.isFinite(row.value)) {
+      return '请输入有效数值';
+    }
+    if (row.type === 'int' && !Number.isInteger(row.value)) {
+      return '必须为整数';
+    }
+    if (row.minValue !== undefined && row.value < row.minValue) {
+      return `不能小于 ${row.minValue}`;
+    }
+    if (row.maxValue !== undefined && row.value > row.maxValue) {
+      return `不能大于 ${row.maxValue}`;
+    }
+    if (row.step !== undefined && row.step > 0) {
+      const base = row.minValue ?? 0;
+      const offset = (row.value - base) / row.step;
+      if (Math.abs(offset - Math.round(offset)) > 1e-8) {
+        return `步进不匹配（step=${row.step}）`;
       }
-      return p;
+    }
+    return null;
+  };
+
+  const handleValueChange = (key: string, newValue: any) => {
+    let rowAfterChange: ParameterRow | null = null;
+    const updated = parameters.map(p => {
+      if (p.key !== key) return p;
+
+      const nextRow = { ...p, value: newValue, isModified: newValue !== p.defaultValue };
+      rowAfterChange = nextRow;
+      return nextRow;
     });
     setParameters(updated);
+
+    if (rowAfterChange) {
+      const currentError = validateParameterRow(rowAfterChange);
+      setValidationErrors(prev => {
+        const next = { ...prev };
+        if (currentError) {
+          next[key] = currentError;
+        } else {
+          delete next[key];
+        }
+        return next;
+      });
+    }
 
     // Check for unsaved changes
     const hasChanges = updated.some(p => p.value !== originalValues[p.key]);
@@ -130,29 +190,32 @@ export const ScreenerConfig: React.FC<ScreenerConfigProps> = ({ screenerName, on
   const handleSave = async () => {
     if (!config) return;
 
-    console.log('[DEBUG] handleSave 开始');
-    console.log('[DEBUG] screenerName:', screenerName);
-    console.log('[DEBUG] 当前 parameters:', parameters);
-
     setSaving(true);
     try {
-      // Build updated parameters
-      const updatedParameters: Record<string, Parameter> = {};
+      const nextValidationErrors: Record<string, string> = {};
       parameters.forEach(row => {
-        updatedParameters[row.name] = {
-          ...config.parameters[row.name],
-          value: row.value
-        };
+        const errorMsg = validateParameterRow(row);
+        if (errorMsg) {
+          nextValidationErrors[row.key] = errorMsg;
+        }
       });
+      setValidationErrors(nextValidationErrors);
+      const errorCount = Object.keys(nextValidationErrors).length;
+      if (errorCount > 0) {
+        message.error(`存在 ${errorCount} 个参数校验失败，请修正后再保存`);
+        return;
+      }
 
-      console.log('[DEBUG] updatedParameters:', JSON.stringify(updatedParameters, null, 2));
+      // Build updated parameters as value-only payload
+      const updatedParameters: Record<string, any> = {};
+      parameters.forEach(row => {
+        updatedParameters[row.name] = row.value;
+      });
 
       const requestBody = {
         parameters: updatedParameters,
         change_summary: '配置更新'
       };
-      console.log('[DEBUG] 发送请求体:', JSON.stringify(requestBody, null, 2));
-      console.log('[DEBUG] 请求 URL:', `/screeners/${screenerName}/config`);
 
       const data = await apiRequest<{ status: string; config: ScreenerConfig }>(
         `/screeners/${screenerName}/config`,
@@ -162,13 +225,12 @@ export const ScreenerConfig: React.FC<ScreenerConfigProps> = ({ screenerName, on
         }
       );
 
-      console.log('[DEBUG] 响应数据:', data);
       message.success(`配置已保存！版本: ${data.config?.metadata?.version || 'v1.0'}`);
 
       // Update original values after successful save
       const newValues: Record<string, any> = {};
       Object.keys(updatedParameters).forEach(key => {
-        newValues[key] = updatedParameters[key].value;
+        newValues[key] = updatedParameters[key];
       });
       setOriginalValues(newValues);
       setUnsavedChanges(false);
@@ -188,6 +250,7 @@ export const ScreenerConfig: React.FC<ScreenerConfigProps> = ({ screenerName, on
       isModified: originalValues[p.name] !== p.defaultValue
     }));
     setParameters(resetParams);
+    setValidationErrors({});
     setUnsavedChanges(false);
     message.info('已重置为当前保存的值');
   };
@@ -211,10 +274,11 @@ export const ScreenerConfig: React.FC<ScreenerConfigProps> = ({ screenerName, on
       key: 'value',
       width: 150,
       render: (value: any, record: ParameterRow) => {
+        const hasError = Boolean(validationErrors[record.key]);
         const inputStyle = {
           width: '100%',
           padding: '4px 8px',
-          border: '1px solid #d1d5db',
+          border: hasError ? '1px solid #ef4444' : '1px solid #d1d5db',
           borderRadius: '4px',
           fontSize: '14px',
           backgroundColor: '#ffffff',
@@ -304,6 +368,9 @@ export const ScreenerConfig: React.FC<ScreenerConfigProps> = ({ screenerName, on
       key: 'status',
       width: 80,
       render: (_: any, record: ParameterRow) => {
+        if (validationErrors[record.key]) {
+          return <span style={{ color: '#dc2626', fontWeight: 500, fontSize: '13px' }}>校验失败</span>;
+        }
         if (record.isModified) {
           return <span style={{ color: '#d97706', fontWeight: 500, fontSize: '13px' }}>已修改</span>;
         }

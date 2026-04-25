@@ -46,8 +46,29 @@ export interface CheckResult {
 // API 配置：开发时走 Vite proxy（/api → localhost:5003），生产时走同域
 // Backend API configuration
 // Use proxy in development, auto-detect in production
-const isDev = (import.meta as any).env?.DEV === 'true';
-const API_BASE = isDev ? '/api' : `${window.location.origin}/api`;
+const env = (import.meta as any).env ?? {};
+const isDev = Boolean(env.DEV);
+const normalizeApiBase = (raw: string): string => {
+  const cleaned = raw.trim().replace(/\/+$/, '');
+  if (!cleaned) return '';
+  if (/^https?:\/\//i.test(cleaned) || cleaned.startsWith('/')) return cleaned;
+  if (
+    /^localhost(?::\d+)?(\/.*)?$/i.test(cleaned) ||
+    /^\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(\/.*)?$/.test(cleaned) ||
+    /^[a-z0-9.-]+\.[a-z]{2,}(?::\d+)?(\/.*)?$/i.test(cleaned)
+  ) {
+    return `http://${cleaned}`;
+  }
+  return `/${cleaned.replace(/^\/+/, '')}`;
+};
+const envApiBase = typeof env.VITE_API_BASE === 'string' ? normalizeApiBase(env.VITE_API_BASE) : '';
+const API_BASE = envApiBase || (
+  isDev
+    ? '/api'
+    : (window.location.origin && window.location.origin !== 'null'
+      ? `${window.location.origin}/api`
+      : 'http://127.0.0.1:5003/api')
+);
 
 /**
  * 通用请求函数（含完善的错误处理）

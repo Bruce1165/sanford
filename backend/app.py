@@ -12,6 +12,7 @@ import threading
 import time
 import smtplib
 import ssl
+from collections import deque
 from pathlib import Path
 from datetime import datetime, date, timedelta
 from functools import wraps
@@ -36,10 +37,10 @@ else:
 
 # Import models
 from models import (
-    init_db, get_db_connection, get_stock_db_connection, get_all_screeners, get_screener,
-    get_runs, get_run, get_results, get_results_by_date,
-    log_access, get_access_stats
+    init_db, get_db_connection, get_stock_db_connection, get_results_by_date,
+    log_access, save_screener_config
 )
+from validators import validate_screener_config, validate_screener_config_update
 
 # Import excel upload handler
 from excel_upload import handle_excel_upload, handle_lao_ya_tou_pool_upload
@@ -80,6 +81,221 @@ def safe_jsonify(data):
         json.dumps(data, cls=SafeJSONEncoder, ensure_ascii=False),
         mimetype='application/json'
     )
+
+
+def _resolve_effective_trade_date(requested_date: str):
+    """
+    Resolve requested date to an effective trading day based on daily_prices.
+    Returns tuple: (is_trading_day: bool, effective_trade_date: Optional[str])
+    """
+    conn = get_stock_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT MAX(trade_date) AS trade_date FROM daily_prices WHERE trade_date <= ?',
+            (requested_date,),
+        )
+        row = cursor.fetchone()
+        effective = None
+        if row:
+            effective = row['trade_date'] if isinstance(row, dict) else row[0]
+        effective = str(effective)[:10] if effective else None
+        return (effective == requested_date, effective)
+    finally:
+        conn.close()
+
+
+def _normalize_schema_parameters(schema_obj):
+    """Normalize schema object into flat parameter schema dict."""
+    if not isinstance(schema_obj, dict):
+        return {}
+    params = schema_obj.get('parameters')
+    if isinstance(params, dict):
+        return params
+    return schema_obj
+
+
+def _extract_parameter_value(param_payload):
+    """Extract scalar parameter value from either value-only or full object payload."""
+    if isinstance(param_payload, dict) and 'value' in param_payload:
+        return param_payload.get('value')
+    return param_payload
+
+
+def _extract_config_kwargs(config: object, init_params: dict) -> dict:
+    """Extract accepted __init__ kwargs from config payload."""
+    if not isinstance(config, dict):
+        return {}
+
+    kwargs = {}
+    parameters = config.get('parameters')
+    if isinstance(parameters, dict):
+        for key, meta in parameters.items():
+            normalized = str(key).strip().lower()
+            if normalized in init_params:
+                kwargs[normalized] = _extract_parameter_value(meta)
+
+    config_json = config.get('config_json')
+    if isinstance(config_json, dict):
+        for key, value in config_json.items():
+            normalized = str(key).strip().lower()
+            if normalized in init_params:
+                kwargs[normalized] = value
+
+    if not kwargs:
+        for key, value in config.items():
+            if key in {'display_name', 'description', 'category', 'metadata', 'parameters'}:
+                continue
+            normalized = str(key).strip().lower()
+            if normalized in init_params:
+                kwargs[normalized] = value
+
+    return kwargs
+
+
+def _resolve_stock_name(stock_code: str) -> str:
+    """Load stock name from stock database."""
+    conn = get_stock_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT name FROM stocks WHERE code = ? LIMIT 1', (stock_code,))
+    row = cursor.fetchone()
+    conn.close()
+    return (row['name'] if row and row['name'] else stock_code)
+
+
+def _instantiate_screener(screener_name: str):
+    """Instantiate screener class with db_path and dashboard config where available."""
+    import inspect
+
+    workspace_root = DASHBOARD_DIR.parent
+    possible_files = [
+        workspace_root / f"{screener_name}.py",
+        workspace_root / "scripts" / f"{screener_name}.py",
+        workspace_root / "screeners" / f"{screener_name}.py",
+        workspace_root / f"{screener_name}_screener.py",
+        workspace_root / "scripts" / f"{screener_name}_screener.py",
+        workspace_root / "screeners" / f"{screener_name}_screener.py",
+    ]
+
+    if screener_name == 'coffee_cup_v4':
+        possible_files.extend([
+            workspace_root / "coffee_cup_handle_screener_v4.py",
+            workspace_root / "scripts" / "coffee_cup_handle_screener_v4.py",
+            workspace_root / "screeners" / "coffee_cup_handle_screener_v4.py",
+        ])
+
+    screener_file = next((f for f in possible_files if f.exists()), None)
+    if not screener_file:
+        raise FileNotFoundError(f"Screener file not found: {screener_name}")
+
+    if str(workspace_root) not in sys.path:
+        sys.path.insert(0, str(workspace_root))
+    if str(workspace_root / "scripts") not in sys.path:
+        sys.path.insert(0, str(workspace_root / "scripts"))
+    if str(workspace_root / "screeners") not in sys.path:
+        sys.path.insert(0, str(workspace_root / "screeners"))
+
+    module_name = f"check_{screener_name}_module"
+    if module_name in sys.modules:
+        del sys.modules[module_name]
+    spec = importlib.util.spec_from_file_location(module_name, screener_file)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+
+    class_name = screeners_module.get_screener_class_name(screener_name)
+    screener_class = getattr(module, class_name)
+    init_params = inspect.signature(screener_class.__init__).parameters
+
+    init_kwargs = {}
+    if 'db_path' in init_params:
+        init_kwargs['db_path'] = str(DASHBOARD_DIR.parent / 'data' / 'stock_data.db')
+
+    try:
+        from backend.config_loader import ConfigLoader
+        config = ConfigLoader.load_config(screener_name, prefer_database=True)
+        if config:
+            init_kwargs.update(_extract_config_kwargs(config, init_params))
+    except Exception:
+        pass
+
+    if 'enable_news' in init_params:
+        init_kwargs['enable_news'] = False
+    if 'enable_llm' in init_params:
+        init_kwargs['enable_llm'] = False
+    if 'enable_progress' in init_params:
+        init_kwargs['enable_progress'] = False
+    if 'use_pool' in init_params:
+        init_kwargs['use_pool'] = False
+
+    return screener_class(**init_kwargs)
+
+
+def _normalize_check_response(raw_result: object, screener_name: str, stock_code: str, stock_name: str, check_date: str) -> dict:
+    """Normalize various screener result formats to frontend check card schema."""
+    if raw_result is None:
+        return {
+            'match': False,
+            'code': stock_code,
+            'name': stock_name,
+            'date': check_date,
+            'details': {},
+            'reasons': [f'未命中 {screener_name} 条件'],
+        }
+
+    if not isinstance(raw_result, dict):
+        return {
+            'match': False,
+            'code': stock_code,
+            'name': stock_name,
+            'date': check_date,
+            'details': {},
+            'reasons': [f'无效返回格式: {type(raw_result).__name__}'],
+        }
+
+    match = raw_result.get('match')
+    if match is None:
+        match = raw_result.get('matched')
+    if match is None:
+        match = raw_result.get('pattern_found')
+    match = _to_native_bool(match)
+
+    details = raw_result.get('details')
+    if not isinstance(details, dict):
+        details = {}
+
+    if not details and match:
+        reserved = {
+            'match', 'matched', 'pattern_found',
+            'code', 'stock_code', 'name', 'stock_name',
+            'date', 'reason', 'reason_hit', 'reason_miss', 'reasons', 'error'
+        }
+        details = {k: v for k, v in raw_result.items() if k not in reserved}
+
+    reasons = raw_result.get('reasons')
+    if not isinstance(reasons, list):
+        reasons = []
+    if not match and not reasons:
+        reason_miss = raw_result.get('reason_miss')
+        reason = raw_result.get('reason')
+        error = raw_result.get('error')
+        if isinstance(reason_miss, str) and reason_miss.strip():
+            reasons = [reason_miss]
+        elif isinstance(reason, str) and reason.strip():
+            reasons = [reason]
+        elif isinstance(error, str) and error.strip():
+            reasons = [error]
+        else:
+            reasons = [f'未命中 {screener_name} 条件']
+
+    return {
+        'match': match,
+        'code': raw_result.get('code') or raw_result.get('stock_code') or stock_code,
+        'name': raw_result.get('name') or raw_result.get('stock_name') or stock_name,
+        'date': raw_result.get('date') or check_date,
+        'details': details,
+        'reasons': reasons,
+    }
 
 
 FIVE_FLAGS_TIMELINE_SCREENERS = [
@@ -178,13 +394,30 @@ def _normalize_failed_checks(items):
     return normalized
 
 
+def _normalize_text_list(items, limit: int = 10):
+    """Normalize free-text list into deduplicated JSON-safe strings."""
+    if not isinstance(items, list):
+        return []
+    result = []
+    seen = set()
+    for item in items:
+        text = str(item or '').strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+        if len(result) >= limit:
+            break
+    return result
+
+
 # Authentication
 DASHBOARD_PASSWORD = os.environ.get('DASHBOARD_PASSWORD')
 if not DASHBOARD_PASSWORD:
     raise ValueError("DASHBOARD_PASSWORD environment variable is required")
 
 
-def check_auth(username, password):
+def check_auth(_username, password):
     """验证密码（只验证密码）"""
     return password == DASHBOARD_PASSWORD
 
@@ -269,13 +502,19 @@ def index():
 
 @app.route('/assets/<path:filename>')
 def serve_assets(filename):
-    return send_from_directory(
+    response = send_from_directory(
         DASHBOARD_DIR.parent / 'frontend/dist/assets', filename
     )
+    # Vite assets are content-hashed; enable long-term immutable caching.
+    response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+    return response
 
 
 @app.route('/<path:path>')
 def catch_all(path):
+    # Do not swallow API requests with SPA index fallback.
+    if path.startswith('api/'):
+        return jsonify({'error': f'API not found: /{path}'}), 404
     response = send_from_directory(
         DASHBOARD_DIR.parent / 'frontend/dist', 'index.html'
     )
@@ -327,12 +566,161 @@ def get_screener_results():
     screener_name = request.args.get('screener')
     run_date = request.args.get('date') or date.today().isoformat()
 
-    if screener_name:
-        results = get_results_by_date(screener_name, run_date)
-    else:
-        results = get_results_by_date(run_date)
+    try:
+        datetime.strptime(run_date, '%Y-%m-%d')
+    except ValueError:
+        return safe_jsonify({'error': 'Invalid date format, use YYYY-MM-DD'}), 400
+
+    is_td, effective = _resolve_effective_trade_date(run_date)
+    if not is_td:
+        return safe_jsonify({
+            'error': 'Non-trading day',
+            'requested_date': run_date,
+            'effective_trade_date': effective,
+        }), 400
+
+    if not screener_name:
+        return safe_jsonify({'error': 'Missing screener parameter'}), 400
+
+    results = get_results_by_date(screener_name, run_date)
 
     return safe_jsonify(results)
+
+
+@app.route('/api/stock/<stock_code>/chart')
+def get_stock_chart(stock_code):
+    """Get chart (K-line) data for a stock."""
+    code = (stock_code or '').strip()
+    if len(code) != 6 or not code.isdigit():
+        return jsonify({'error': 'Invalid stock code, use 6 digits'}), 400
+
+    raw_days = request.args.get('days', '60')
+    try:
+        days = int(raw_days)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'days must be an integer'}), 400
+    days = max(5, min(days, 400))
+
+    chart_data = screeners_module.get_stock_data_for_chart(code, days=days)
+    if not chart_data:
+        return safe_jsonify({'stock_code': code, 'days': days, 'data': []})
+
+    return safe_jsonify({'stock_code': code, 'days': days, 'data': chart_data})
+
+
+@app.route('/api/check-stock', methods=['POST'])
+def check_stock():
+    """Ad-hoc check if a stock matches one screener on a date."""
+    if not request.is_json:
+        return jsonify({'error': 'Request must be JSON'}), 400
+
+    payload = request.get_json() or {}
+    screener_name = (payload.get('screener') or '').strip()
+    stock_code = (payload.get('code') or '').strip()
+    check_date = (payload.get('date') or date.today().isoformat()).strip()
+
+    if not screener_name:
+        return jsonify({'error': 'Missing screener parameter'}), 400
+    if not stock_code:
+        return jsonify({'error': 'Missing code parameter'}), 400
+    if len(stock_code) != 6 or not stock_code.isdigit():
+        return jsonify({'error': 'Invalid stock code, use 6 digits'}), 400
+    try:
+        datetime.strptime(check_date, '%Y-%m-%d')
+    except ValueError:
+        return jsonify({'error': 'Invalid date format, use YYYY-MM-DD'}), 400
+
+    try:
+        stock_name = _resolve_stock_name(stock_code)
+
+        # Five-flags screeners: use adapter for unified "miss diagnostics" output.
+        if _resolve_five_flags_screener_id(screener_name):
+            from scripts.pool_screener_adapter import ScreenerAdapter
+
+            adapter = ScreenerAdapter(db_path=str(DASHBOARD_DIR.parent / 'data' / 'stock_data.db'))
+            adapter_result = adapter.check_stock(
+                screener_id=_resolve_five_flags_screener_id(screener_name),
+                stock_code=stock_code,
+                stock_name=stock_name,
+                date=check_date,
+                include_miss_details=True
+            )
+            return safe_jsonify(_normalize_check_response(adapter_result, screener_name, stock_code, stock_name, check_date))
+
+        screener = _instantiate_screener(screener_name)
+
+        if hasattr(screener, 'current_date'):
+            screener.current_date = check_date
+        if hasattr(screener, '_current_date'):
+            try:
+                screener._current_date = datetime.strptime(check_date, '%Y-%m-%d').date()
+            except Exception:
+                pass
+
+        raw_result = None
+        if hasattr(screener, 'check_single_stock'):
+            try:
+                raw_result = screener.check_single_stock(stock_code, check_date)
+            except Exception as check_exc:
+                # Some legacy check_single_stock implementations rely on missing globals.
+                # Fallback to screen_stock to keep CHECK endpoint available.
+                if hasattr(screener, 'screen_stock'):
+                    screen_result = screener.screen_stock(stock_code, stock_name)
+                    if isinstance(screen_result, dict):
+                        raw_result = {
+                            'match': True,
+                            'code': stock_code,
+                            'name': stock_name,
+                            'date': check_date,
+                            'details': screen_result,
+                            'reasons': [],
+                        }
+                    else:
+                        raw_result = {
+                            'match': False,
+                            'code': stock_code,
+                            'name': stock_name,
+                            'date': check_date,
+                            'details': {},
+                            'reasons': [f'未命中 {screener_name} 条件'],
+                        }
+                else:
+                    raw_result = {
+                        'match': False,
+                        'code': stock_code,
+                        'name': stock_name,
+                        'date': check_date,
+                        'details': {},
+                        'reasons': [f'检查失败: {str(check_exc)}'],
+                    }
+        elif hasattr(screener, 'screen_stock'):
+            screen_result = screener.screen_stock(stock_code, stock_name)
+            if isinstance(screen_result, dict):
+                raw_result = {
+                    'match': True,
+                    'code': stock_code,
+                    'name': stock_name,
+                    'date': check_date,
+                    'details': screen_result,
+                    'reasons': [],
+                }
+            else:
+                raw_result = {
+                    'match': False,
+                    'code': stock_code,
+                    'name': stock_name,
+                    'date': check_date,
+                    'details': {},
+                    'reasons': [f'未命中 {screener_name} 条件'],
+                }
+        else:
+            return jsonify({'error': f'Screener {screener_name} does not support stock checking'}), 400
+
+        return safe_jsonify(_normalize_check_response(raw_result, screener_name, stock_code, stock_name, check_date))
+    except FileNotFoundError:
+        return jsonify({'error': f'Screener not found: {screener_name}'}), 404
+    except Exception as e:
+        return jsonify({'error': f'check failed: {str(e)}'}), 500
 
 
 @app.route('/api/screeners/<screener_name>/run', methods=['POST'])
@@ -344,30 +732,39 @@ def run_screener(screener_name):
         run_date = request_data.get('date')
 
         if not run_date:
-            return jsonify({'error': 'Missing date parameter'}), 400
+            return safe_jsonify({'error': 'Missing date parameter'}), 400
 
         # Validate date format
         try:
             datetime.strptime(run_date, '%Y-%m-%d')
         except ValueError:
-            return jsonify({'error': 'Invalid date format, use YYYY-MM-DD'}), 400
+            return safe_jsonify({'error': 'Invalid date format, use YYYY-MM-DD'}), 400
+
+        is_td, effective = _resolve_effective_trade_date(run_date)
+        if not is_td:
+            return safe_jsonify({
+                'error': 'Non-trading day',
+                'requested_date': run_date,
+                'effective_trade_date': effective,
+            }), 400
 
         # Call the actual screener run function
         run_id = run_screener_subprocess(screener_name, run_date)
 
-        return jsonify({
+        return safe_jsonify({
             'status': 'success',
             'screener': screener_name,
             'run_id': run_id,
-            'date': run_date
+            'requested_date': run_date,
+            'effective_trade_date': run_date
         })
 
     except FileNotFoundError as e:
-        return jsonify({'error': str(e)}), 404
+        return safe_jsonify({'error': str(e)}), 404
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        return safe_jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/screeners/<screener_name>/config', methods=['GET'])
@@ -391,6 +788,7 @@ def get_screener_config(screener_name):
     (display_name, description, category, config_json, schema_json, version, created_at, updated_at) = row
     config = json.loads(config_json) if config_json else {'parameters': {}}
     schema = json.loads(schema_json) if schema_json else {}
+    schema_parameters = _normalize_schema_parameters(schema)
 
     # Merge config with schema for full parameter details
     merged_config = {
@@ -404,21 +802,21 @@ def get_screener_config(screener_name):
     }
 
     # Load fallback schema from JSON config file if database schema is empty
-    if not schema:
+    if not schema_parameters:
         config_file_path = DASHBOARD_DIR.parent / 'config' / 'screeners' / f'{screener_name}.json'
         if config_file_path.exists():
             try:
                 with open(config_file_path, 'r', encoding='utf-8') as f:
                     file_config = json.load(f)
                     # Use parameters from file as schema
-                    schema = file_config.get('parameters', {})
-                    print(f"[DEBUG] Loaded schema from config file: {len(schema)} parameters")
+                    schema_parameters = file_config.get('parameters', {})
+                    print(f"[DEBUG] Loaded schema from config file: {len(schema_parameters)} parameters")
             except Exception as e:
                 print(f"[DEBUG] Failed to load config file: {e}")
 
     # Build parameters with schema metadata (fallback to config if schema is empty)
-    if schema:
-        for param_name, param_config in schema.items():
+    if schema_parameters:
+        for param_name, param_config in schema_parameters.items():
             param_data = param_config.copy()
             # Override value with current config value if exists
             if param_name in config.get('parameters', {}):
@@ -444,67 +842,138 @@ def update_screener_config(screener_name):
     """Update screener configuration"""
     if not request.is_json:
         return jsonify({'error': 'Request must be JSON'}), 400
-    
-    config_data = request.get_json()
-    
+
+    config_data = request.get_json() or {}
+    is_valid_update, update_error, validated_update = validate_screener_config_update(config_data)
+    if not is_valid_update:
+        return jsonify({'error': update_error}), 400
+
     conn = get_db_connection()
     cursor = conn.cursor()
-    
+
     # Get existing config
     cursor.execute(
-        'SELECT display_name, description, category, config_json, config_schema '
+        'SELECT display_name, description, category, config_json, config_schema, current_version '
         'FROM screener_configs WHERE screener_name = ?',
         (screener_name,)
     )
     row = cursor.fetchone()
-    
+
     if not row:
         conn.close()
         return jsonify({'error': 'Screener not found'}), 404
-    
-    display_name, description, category, config_json, schema_json = row
-    schema = json.loads(schema_json)
+
+    display_name, description, category, config_json, schema_json, current_version = row
+    schema = json.loads(schema_json) if schema_json else {}
+    schema_parameters = _normalize_schema_parameters(schema)
+    # Fallback to file schema if database schema is missing
+    if not schema_parameters:
+        config_file_path = DASHBOARD_DIR.parent / 'config' / 'screeners' / f'{screener_name}.json'
+        if config_file_path.exists():
+            try:
+                with open(config_file_path, 'r', encoding='utf-8') as f:
+                    file_config = json.load(f)
+                    schema_parameters = file_config.get('parameters', {})
+                    schema = {'parameters': schema_parameters}
+            except Exception as e:
+                print(f"[DEBUG] Failed to load fallback schema file for update: {e}")
+
     existing_config = json.loads(config_json) if config_json else {'parameters': {}}
-    
+    conn.close()
+
+    incoming_parameters = validated_update.get('parameters', {})
+    if not isinstance(incoming_parameters, dict):
+        return jsonify({'error': 'Parameters must be an object'}), 400
+
+    normalized_values = {
+        param_name: _extract_parameter_value(param_payload)
+        for param_name, param_payload in incoming_parameters.items()
+    }
+
+    is_valid_config, validation_errors = validate_screener_config(
+        {
+            'display_name': display_name,
+            'parameters': normalized_values
+        },
+        schema_parameters
+    )
+    if not is_valid_config:
+        return jsonify({
+            'error': '参数校验失败',
+            'validation_errors': validation_errors
+        }), 400
+
     # Merge new config with existing parameters
     merged_config = {
-        'display_name': display_name,
-        'description': description,
-        'category': category,
+        'display_name': validated_update.get('display_name', display_name),
+        'description': validated_update.get('description', description),
+        'category': validated_update.get('category', category),
         'parameters': existing_config.get('parameters', {}).copy()
     }
-    
+
     # Update parameters from request
-    if 'parameters' in config_data:
-        for param_name, param_value in config_data['parameters'].items():
-            if schema and param_name in schema:
-                # Use schema for validation if available
+    for param_name, param_value in normalized_values.items():
+        if schema_parameters and param_name in schema_parameters:
+            # Use schema metadata and always keep scalar value in "value"
+            param_schema = schema_parameters[param_name]
+            merged_config['parameters'][param_name] = {
+                'value': param_value,
+                'display_name': param_schema.get('display_name', param_name),
+                'description': param_schema.get('description', ''),
+                'group': param_schema.get('group', '其他'),
+                'type': param_schema.get('type', 'string'),
+                'min': param_schema.get('min'),
+                'max': param_schema.get('max'),
+                'step': param_schema.get('step'),
+                'default': param_schema.get('default')
+            }
+        else:
+            # No schema available: preserve prior metadata if exists
+            existing_param = merged_config['parameters'].get(param_name, {})
+            if isinstance(existing_param, dict):
                 merged_config['parameters'][param_name] = {
                     'value': param_value,
-                    'display_name': schema[param_name].get('display_name', param_name),
-                    'description': schema[param_name].get('description', ''),
-                    'group': schema[param_name].get('group', '其他'),
-                    'type': schema[param_name].get('type', 'string'),
-                    'min': schema[param_name].get('min'),
-                    'max': schema[param_name].get('max'),
-                    'step': schema[param_name].get('step'),
-                    'default': schema[param_name].get('default')
+                    'display_name': existing_param.get('display_name', param_name),
+                    'description': existing_param.get('description', ''),
+                    'group': existing_param.get('group', '其他'),
+                    'type': existing_param.get('type', 'string'),
+                    'min': existing_param.get('min'),
+                    'max': existing_param.get('max'),
+                    'step': existing_param.get('step'),
+                    'default': existing_param.get('default')
                 }
             else:
-                # If schema is empty or param not found, preserve full param structure from request
-                merged_config['parameters'][param_name] = param_value
-    
-    # Save to database
-    config_json = json.dumps(merged_config)
-    cursor.execute(
-        'UPDATE screener_configs SET config_json = ?, current_version = ? '
-        'WHERE screener_name = ?',
-        (config_json, 'v1.0', screener_name)
+                merged_config['parameters'][param_name] = {
+                    'value': param_value,
+                    'display_name': param_name,
+                    'description': '',
+                    'group': '其他',
+                    'type': 'string'
+                }
+
+    # Ensure schema is saved in normalized shape
+    schema_to_save = schema
+    if schema_parameters and not (isinstance(schema_to_save, dict) and isinstance(schema_to_save.get('parameters'), dict)):
+        schema_to_save = {'parameters': schema_parameters}
+
+    new_version = save_screener_config(
+        screener_name=screener_name,
+        config=merged_config,
+        schema=schema_to_save,
+        change_summary=validated_update.get('change_summary', '配置更新'),
+        changed_by=validated_update.get('updated_by', 'system')
     )
-    conn.commit()
-    conn.close()
-    
-    return jsonify({'status': 'success', 'config': merged_config})
+
+    merged_config['metadata'] = {
+        'version': new_version,
+        'updated_by': validated_update.get('updated_by', 'system')
+    }
+    return jsonify({
+        'status': 'success',
+        'config': merged_config,
+        'version': new_version,
+        'previous_version': current_version
+    })
 @app.route('/api/calendar')
 def get_trading_calendar():
     """Get trading calendar"""
@@ -521,6 +990,21 @@ def get_trading_calendar():
     conn.close()
 
     return jsonify({'dates': dates})
+
+
+@app.route('/api/trading-day')
+def is_trading_day():
+    qdate = (request.args.get('date') or '').strip()
+    if not qdate:
+        qdate = date.today().isoformat()
+
+    try:
+        datetime.strptime(qdate, '%Y-%m-%d')
+    except ValueError:
+        return safe_jsonify({'error': 'Invalid date format, use YYYY-MM-DD'}), 400
+
+    is_td, effective = _resolve_effective_trade_date(qdate)
+    return safe_jsonify({'date': qdate, 'is_trading_day': is_td, 'recent_trading_day': effective})
 
 
 @app.route('/api/data-health')
@@ -785,7 +1269,6 @@ register_discovered_screeners()
 print('[DEBUG] Loading screener configurations...')
 config_dir = DASHBOARD_DIR.parent / 'config' / 'screeners'
 if config_dir.exists():
-    import glob
     config_files = sorted(config_dir.glob('*.json'))
 
     conn = get_db_connection()
@@ -869,7 +1352,7 @@ def get_monitor_screeners():
 
     screeners = []
     for row in rows:
-        (screener_name, display_name, category) = row
+        (screener_name, display_name, _category) = row
         screeners.append({
             'name': screener_name,
             'display_name': display_name
@@ -917,7 +1400,7 @@ def get_monitor_pipeline():
     # Map to Monitor's Pick interface
     picks = []
     for i, row in enumerate(rows):
-        (stock_code, stock_name, close_price, turnover, pct_change, extra_data, started_at) = row
+        (stock_code, stock_name, close_price, _turnover, pct_change, extra_data, started_at) = row
 
         # Parse extra_data for additional info
         extra = {}
@@ -1006,6 +1489,37 @@ def five_flags_health():
         })
     except Exception as e:
         return jsonify({'error': f'five-flags health check failed: {str(e)}'}), 500
+
+
+@app.route('/api/five-flags/cron-logs', methods=['GET'])
+def five_flags_cron_logs():
+    """Return tail lines of five-flags cron stdout/stderr logs."""
+    try:
+        tail = _safe_int_arg('tail', 120, min_value=20, max_value=800)
+        logs_dir = DASHBOARD_DIR.parent / 'logs'
+        stdout_path = logs_dir / 'five_flags_cron.log'
+        stderr_path = logs_dir / 'five_flags_cron_error.log'
+
+        stdout_lines = _read_log_tail(stdout_path, tail)
+        stderr_lines = _read_log_tail(stderr_path, tail)
+
+        return safe_jsonify({
+            'tail': tail,
+            'stdout': {
+                'path': str(stdout_path),
+                'exists': stdout_path.exists(),
+                'updated_at': datetime.fromtimestamp(stdout_path.stat().st_mtime).isoformat() if stdout_path.exists() else None,
+                'lines': stdout_lines,
+            },
+            'stderr': {
+                'path': str(stderr_path),
+                'exists': stderr_path.exists(),
+                'updated_at': datetime.fromtimestamp(stderr_path.stat().st_mtime).isoformat() if stderr_path.exists() else None,
+                'lines': stderr_lines,
+            }
+        })
+    except Exception as e:
+        return jsonify({'error': f'failed to read five-flags cron logs: {str(e)}'}), 500
 
 
 @app.route('/api/five-flags/pools', methods=['GET'])
@@ -1426,6 +1940,7 @@ def five_flags_timeline():
                     'reason_miss': f"当日未满足「{screener['label']}」条件。",
                     'failed_checks': [],
                     'first_failed_check': None,
+                    'diagnostic_hints': [],
                 }
                 for screener in FIVE_FLAGS_TIMELINE_SCREENERS
             ]
@@ -1467,6 +1982,7 @@ def five_flags_timeline():
                 'reason_miss': '',
                 'failed_checks': _normalize_failed_checks(extra_data.get('failed_checks')),
                 'first_failed_check': _normalize_failed_check(extra_data.get('first_failed_check')),
+                'diagnostic_hints': _normalize_text_list(extra_data.get('diagnostic_hints')),
                 'close_price': row['close_price'],
                 'pool_id': row['pool_id'],
                 'created_at': row['created_at']
@@ -1516,6 +2032,7 @@ def five_flags_timeline():
                                 'reason_miss': '',
                                 'failed_checks': [],
                                 'first_failed_check': None,
+                                'diagnostic_hints': [],
                                 'close_price': miss_result.get('price'),
                                 'pool_id': None,
                                 'created_at': None,
@@ -1524,6 +2041,7 @@ def five_flags_timeline():
                         item['reason_miss'] = miss_result.get('reason_miss') or item['reason_miss']
                         item['failed_checks'] = _normalize_failed_checks(miss_result.get('failed_checks'))
                         item['first_failed_check'] = _normalize_failed_check(miss_result.get('first_failed_check'))
+                        item['diagnostic_hints'] = _normalize_text_list(miss_result.get('diagnostic_hints'))
 
         timeline = [timeline_map[k] for k in sorted(timeline_map.keys())]
         return safe_jsonify({
@@ -1606,6 +2124,7 @@ def five_flags_diagnose_cell():
                 'reason_miss': f"当日未满足「{resolved_id}」条件。",
                 'failed_checks': [],
                 'first_failed_check': None,
+                'diagnostic_hints': [],
                 'daily_quote': daily_quote,
             })
 
@@ -1619,6 +2138,7 @@ def five_flags_diagnose_cell():
             'reason_miss': result.get('reason_miss') or '',
             'failed_checks': _normalize_failed_checks(result.get('failed_checks')),
             'first_failed_check': _normalize_failed_check(result.get('first_failed_check')),
+            'diagnostic_hints': _normalize_text_list(result.get('diagnostic_hints')),
             'daily_quote': daily_quote,
             'price': result.get('price'),
         })
@@ -1687,6 +2207,14 @@ SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD', '')
 def _five_flags_queue_path():
     """Queue file path for serial five-flags scheduling"""
     return DASHBOARD_DIR.parent / 'data' / 'five_flags_queue.json'
+
+
+def _read_log_tail(log_path: Path, tail: int = 120) -> list[str]:
+    """Read last N lines of a text log file safely."""
+    if not log_path.exists() or tail <= 0:
+        return []
+    with open(log_path, 'r', encoding='utf-8', errors='replace') as fp:
+        return list(deque(fp, maxlen=tail))
 
 
 def _five_flags_daily_scheduler_state_path():
@@ -1793,56 +2321,71 @@ def _save_daily_scheduler_state(state):
 
 def _check_five_flags_unprocessed_data_readiness():
     """
-    Readiness guard for auto/manual default run:
-    1) must have unprocessed pools
-    2) unprocessed pools must have price data in [start_date, end_date]
+    Readiness guard for auto/manual default run.
+    Daily catch-up now runs on all pool stocks, so we require:
+    1) pool table has records
+    2) price table has at least one trade date
+    3) at least one pool row needs catch-up to latest_db_trade_date
     """
     conn = get_stock_db_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute('SELECT COUNT(*) AS cnt FROM lao_ya_tou_pool WHERE processed = 0')
-        unprocessed_row = cursor.fetchone()
-        unprocessed_count = int(unprocessed_row['cnt']) if unprocessed_row and 'cnt' in unprocessed_row.keys() else 0
-
-        if unprocessed_count <= 0:
+        cursor.execute('SELECT COUNT(*) AS cnt FROM lao_ya_tou_pool')
+        pool_row = cursor.fetchone()
+        pool_count = int(pool_row['cnt']) if pool_row and 'cnt' in pool_row.keys() else 0
+        if pool_count <= 0:
             return {
                 'ready': False,
-                'reason': 'no_unprocessed_pools',
-                'unprocessed_count': 0,
-                'processable_count': 0
+                'reason': 'no_pools',
+                'pool_count': 0,
+                'latest_trade_date': None
             }
 
-        cursor.execute('''
-            SELECT COUNT(*) AS cnt
-            FROM (
-                SELECT p.id
-                FROM lao_ya_tou_pool p
-                WHERE p.processed = 0
-                  AND EXISTS (
-                      SELECT 1
-                      FROM daily_prices d
-                      WHERE d.code = p.stock_code
-                        AND d.trade_date >= p.start_date
-                        AND d.trade_date <= p.end_date
-                  )
-            ) t
-        ''')
-        processable_row = cursor.fetchone()
-        processable_count = int(processable_row['cnt']) if processable_row and 'cnt' in processable_row.keys() else 0
-
-        if processable_count <= 0:
+        cursor.execute('SELECT MAX(trade_date) AS latest_trade_date FROM daily_prices')
+        price_row = cursor.fetchone()
+        latest_trade_date = (
+            str(price_row['latest_trade_date'])
+            if price_row and price_row['latest_trade_date']
+            else None
+        )
+        if latest_trade_date is None:
             return {
                 'ready': False,
-                'reason': 'no_price_data_for_unprocessed_pools',
-                'unprocessed_count': unprocessed_count,
-                'processable_count': 0
+                'reason': 'no_price_data',
+                'pool_count': pool_count,
+                'latest_trade_date': None
+            }
+
+        cursor.execute(
+            '''
+            SELECT COUNT(*) AS cnt
+            FROM lao_ya_tou_pool
+            WHERE
+                COALESCE(start_date, '9999-12-31') <= ?
+                AND (
+                    last_screened_date IS NULL
+                    OR last_screened_date < ?
+                )
+            ''',
+            (latest_trade_date, latest_trade_date)
+        )
+        pending_row = cursor.fetchone()
+        pending_pool_count = int(pending_row['cnt']) if pending_row and 'cnt' in pending_row.keys() else 0
+        if pending_pool_count <= 0:
+            return {
+                'ready': False,
+                'reason': 'up_to_date',
+                'pool_count': pool_count,
+                'pending_pool_count': 0,
+                'latest_trade_date': latest_trade_date
             }
 
         return {
             'ready': True,
             'reason': 'ready',
-            'unprocessed_count': unprocessed_count,
-            'processable_count': processable_count
+            'pool_count': pool_count,
+            'pending_pool_count': pending_pool_count,
+            'latest_trade_date': latest_trade_date
         }
     finally:
         conn.close()
@@ -1999,7 +2542,8 @@ def _has_active_five_flags_run():
 
 def _enqueue_five_flags_job(source: str, pool_ids=None, max_workers=None, retry_of=None,
                             snapshot_id=None, flow_config=None, market_phase=None,
-                            phase_profile=None, profile_slot='active', calibration_note=None):
+                            phase_profile=None, profile_slot='active', calibration_note=None,
+                            as_of_date=None):
     now = datetime.now().isoformat()
     job = {
         'job_id': f'ffq_{datetime.now().strftime("%Y%m%d_%H%M%S")}_{uuid.uuid4().hex[:8]}',
@@ -2017,6 +2561,7 @@ def _enqueue_five_flags_job(source: str, pool_ids=None, max_workers=None, retry_
         'phase_profile': phase_profile,
         'profile_slot': profile_slot,
         'calibration_note': calibration_note,
+        'as_of_date': as_of_date,
         'error': None
     }
     with FIVE_FLAGS_QUEUE_LOCK:
@@ -2051,7 +2596,8 @@ def _drain_five_flags_queue_once():
                 market_phase=target_job.get('market_phase'),
                 phase_profile=target_job.get('phase_profile'),
                 profile_slot=target_job.get('profile_slot') or 'active',
-                calibration_note=target_job.get('calibration_note')
+                calibration_note=target_job.get('calibration_note'),
+                as_of_date=target_job.get('as_of_date')
             )
             for item in queue_items:
                 if item.get('job_id') == target_job_id:
@@ -2143,8 +2689,8 @@ def _start_five_flags_daily_scheduler():
                             )
                             _drain_five_flags_queue_once()
                             state['last_trigger_date'] = now_dt.date().isoformat()
-                        elif readiness.get('reason') == 'no_unprocessed_pools':
-                            # No work today: mark as checked to avoid repeated polling.
+                        elif readiness.get('reason') in ('no_pools', 'up_to_date'):
+                            # No pool data or no catch-up needed: mark checked to avoid repeated polling.
                             state['last_trigger_date'] = now_dt.date().isoformat()
                         _save_daily_scheduler_state(state)
             except Exception:
@@ -2328,7 +2874,7 @@ def _build_level_timing_summary(runs, limit_runs=20, flow_id=None, spike_thresho
 def _start_five_flags_run(pool_ids=None, max_workers=None, dry_run=False,
                           retry_of=None, snapshot_id=None, flow_config=None,
                           market_phase=None, phase_profile=None, profile_slot='active',
-                          calibration_note=None):
+                          calibration_note=None, as_of_date=None):
     """
     Start five-flags screening subprocess in controlled async mode.
     Returns dict payload for API response.
@@ -2352,6 +2898,7 @@ def _start_five_flags_run(pool_ids=None, max_workers=None, dry_run=False,
             'phase_profile': phase_profile,
             'profile_slot': profile_slot,
             'calibration_note': calibration_note,
+            'as_of_date': as_of_date,
             'dry_run': True
         }
 
@@ -2370,6 +2917,8 @@ def _start_five_flags_run(pool_ids=None, max_workers=None, dry_run=False,
         cmd.extend(['--profile-slot', str(profile_slot)])
     if calibration_note:
         cmd.extend(['--calibration-note', str(calibration_note)])
+    if as_of_date:
+        cmd.extend(['--as-of-date', str(as_of_date)])
 
     logs_dir = project_root / 'logs'
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -2401,6 +2950,7 @@ def _start_five_flags_run(pool_ids=None, max_workers=None, dry_run=False,
         'phase_profile': phase_profile,
         'profile_slot': profile_slot,
         'calibration_note': calibration_note,
+        'as_of_date': as_of_date,
         'dry_run': False,
         'log_file': str(log_file),
         'command': cmd
@@ -2418,6 +2968,7 @@ def _start_five_flags_run(pool_ids=None, max_workers=None, dry_run=False,
         'phase_profile': phase_profile,
         'profile_slot': profile_slot,
         'calibration_note': calibration_note,
+        'as_of_date': as_of_date,
         'dry_run': False
     }
 
@@ -2674,6 +3225,7 @@ def five_flags_run():
         phase_profile = payload.get('phase_profile')
         profile_slot = _normalize_profile_slot(payload.get('profile_slot'), default='active')
         calibration_note = (payload.get('calibration_note') or '').strip() or None
+        as_of_date = (payload.get('as_of_date') or '').strip() or None
         dry_run = bool(payload.get('dry_run', False))
         max_workers = payload.get('max_workers')
 
@@ -2717,7 +3269,8 @@ def five_flags_run():
                 market_phase=market_phase,
                 phase_profile=phase_profile,
                 profile_slot=profile_slot,
-                calibration_note=calibration_note
+                calibration_note=calibration_note,
+                as_of_date=as_of_date
             )
             return safe_jsonify(result), 202
 
@@ -2731,7 +3284,8 @@ def five_flags_run():
             market_phase=market_phase,
             phase_profile=phase_profile,
             profile_slot=profile_slot,
-            calibration_note=calibration_note
+            calibration_note=calibration_note,
+            as_of_date=as_of_date
         )
         started = _drain_five_flags_queue_once()
         queued_status = 'queued'
@@ -2750,7 +3304,8 @@ def five_flags_run():
             'market_phase': market_phase,
             'phase_profile': phase_profile,
             'profile_slot': profile_slot,
-            'calibration_note': calibration_note
+            'calibration_note': calibration_note,
+            'as_of_date': as_of_date
         }), 202
     except ValueError as e:
         return jsonify({'error': str(e)}), 400

@@ -518,16 +518,13 @@ class BaseScreener(DBMixin, abc.ABC):
         else:
             dt = date.today()
 
-        # 如果不是交易日，自动调整为最近的交易日
         try:
             from trading_calendar import is_trading_day, get_recent_trading_day
             if not is_trading_day(dt):
                 corrected = get_recent_trading_day(dt)
-                logger.warning(
-                    "[%s] %s 不是交易日，自动调整为 %s",
-                    self.screener_name, dt, corrected
-                )
-                dt = corrected
+                raise ValueError(f"[{self.screener_name}] {dt} 不是交易日，建议使用最近交易日 {corrected}")
+        except ValueError:
+            raise
         except Exception as exc:
             logger.warning("[%s] 交易日历检查失败: %s", self.screener_name, exc)
 

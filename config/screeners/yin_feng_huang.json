@@ -44,7 +44,7 @@
     "SIGNAL_THREE_SHRINK_RATIO": {
       "value": 1.0,
       "display_name": "信号三缩量比例",
-      "description": "信号三（T日）成交额需要小于前一日的倍数（1.0表示严格小于）",
+      "description": "缩量确认日的成交额，相对前一日允许的最大比例（1.0表示必须低于前一日）",
       "group": "信号条件",
       "type": "float",
       "min": 0.8,
@@ -62,6 +62,26 @@
       "max": 3.0,
       "step": 0.1,
       "default": 2.0
+    },
+    "MIN_HISTORY_DAYS": {
+      "value": 10,
+      "display_name": "最小历史天数",
+      "description": "单股筛选前要求的最少历史数据天数",
+      "group": "基础设置",
+      "type": "int",
+      "min": 1,
+      "max": 120,
+      "default": 10
+    },
+    "HISTORY_BUFFER_DAYS": {
+      "value": 10,
+      "display_name": "历史缓冲天数",
+      "description": "加载数据时在时间范围基础上额外增加的缓冲天数",
+      "group": "基础设置",
+      "type": "int",
+      "min": 0,
+      "max": 120,
+      "default": 10
     }
   }
 }

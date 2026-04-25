@@ -1,0 +1,44 @@
+{
+  "metadata": {
+    "version": "v1",
+    "updated_at": "2026-04-22T00:00:00"
+  },
+  "profiles": {
+    "default": {
+      "active": {},
+      "candidate": {}
+    },
+    "WAVE_1": {
+      "active": {},
+      "candidate": {}
+    },
+    "WAVE_2": {
+      "active": {},
+      "candidate": {}
+    },
+    "WAVE_3": {
+      "active": {},
+      "candidate": {}
+    },
+    "WAVE_4": {
+      "active": {},
+      "candidate": {}
+    },
+    "WAVE_5": {
+      "active": {},
+      "candidate": {}
+    },
+    "WAVE_A": {
+      "active": {},
+      "candidate": {}
+    },
+    "WAVE_B": {
+      "active": {},
+      "candidate": {}
+    },
+    "WAVE_C": {
+      "active": {},
+      "candidate": {}
+    }
+  }
+}

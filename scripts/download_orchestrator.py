@@ -25,10 +25,8 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import platform
 import shutil
-import sqlite3
 import subprocess
 import sys
 import time
@@ -205,7 +203,7 @@ def step1_download_today(dry_run: bool = False) -> Dict[str, Any]:
         logger.error("download_today.py 不存在")
         return {"ok": False, "rc": 1, "error": "download_today.py not found", "elapsed": 0}
 
-    rc, out, err = _run_script(script, extra_args=["--fundamentals"], timeout=STEP_TIMEOUT, max_retries=1)
+    rc, _, err = _run_script(script, extra_args=["--fundamentals"], timeout=STEP_TIMEOUT, max_retries=1)
     elapsed = round(time.time() - start_ts, 1)
     if rc == 0:
         logger.info("Step 1 完成，耗时 %.1fs", elapsed)
@@ -213,6 +211,30 @@ def step1_download_today(dry_run: bool = False) -> Dict[str, Any]:
 
     logger.error("Step 1 失败 rc=%d\n%s", rc, err[-500:])
     notify_macos("❌ NeoTrade 下载失败", f"今日行情下载失败 rc={rc}", "Step 1")
+    return {"ok": False, "rc": rc, "error": err[-500:], "elapsed": elapsed}
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Step 1.5：元数据同步（BaoStock → stock_meta）
+# ────────────────────────────────────────────────────────────────────────────
+def step15_sync_stock_meta(dry_run: bool = False) -> Dict[str, Any]:
+    logger.info("=== Step 1.5: 元数据同步（BaoStock → stock_meta）===")
+    start_ts = time.time()
+
+    script = SCRIPTS_DIR / "update_stock_metadata.py"
+    if not script.exists():
+        logger.error("update_stock_metadata.py 不存在")
+        return {"ok": False, "rc": 1, "error": "update_stock_metadata.py not found", "elapsed": 0}
+
+    args = ["--dry-run"] if dry_run else []
+    rc, _, err = _run_script(script, extra_args=args, timeout=STEP_TIMEOUT, max_retries=1)
+    elapsed = round(time.time() - start_ts, 1)
+    if rc == 0:
+        logger.info("Step 1.5 完成，耗时 %.1fs", elapsed)
+        return {"ok": True, "rc": 0, "elapsed": elapsed}
+
+    logger.error("Step 1.5 失败 rc=%d\n%s", rc, err[-500:])
+    notify_macos("❌ 元数据同步失败", f"stock_meta 同步失败 rc={rc}", "Step 1.5")
     return {"ok": False, "rc": rc, "error": err[-500:], "elapsed": elapsed}
 
 
@@ -233,7 +255,7 @@ def step2_verify_integrity(full_verify: bool = False, dry_run: bool = False) -> 
         return {"ok": True, "dry_run": True, "elapsed": 0}
 
     args = ["--full"] if full_verify else ["--full"]
-    rc, out, err = _run_script(script, extra_args=args, timeout=STEP_TIMEOUT)
+    rc, _, err = _run_script(script, extra_args=args, timeout=STEP_TIMEOUT)
     elapsed = round(time.time() - start_ts, 1)
 
     if rc not in (0, 3):
@@ -349,6 +371,14 @@ def main() -> int:
         report["outcome"] = "download_failed"
         _finalize(report, run_start)
         return 2
+
+    # Step 1.5
+    s15 = step15_sync_stock_meta(dry_run=args.dry_run)
+    report["steps"]["step1_5_stock_meta"] = s15
+    if not s15["ok"]:
+        report["outcome"] = "stock_meta_sync_failed"
+        _finalize(report, run_start)
+        return 6
 
     # Step 2
     s2 = step2_verify_integrity(full_verify=args.full_verify, dry_run=args.dry_run)

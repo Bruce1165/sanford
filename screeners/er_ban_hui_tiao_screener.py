@@ -50,6 +50,9 @@ class ErBanHuiTiaoScreener(BaseScreener):
                  limit_days: int = LIMIT_DAYS,
                  limit_up_threshold: float = LIMIT_UP_THRESHOLD,
                  first_board_volume_ratio: float = FIRST_BOARD_VOLUME_RATIO,
+                 min_signal_one_days: int = 3,
+                 min_history_days: int = 10,
+                 history_buffer_days: int = 10,
                  db_path: str = "data/stock_data.db",
                  enable_news: bool = False,
                  enable_llm: bool = False,
@@ -65,6 +68,9 @@ class ErBanHuiTiaoScreener(BaseScreener):
         self.limit_days = limit_days
         self.limit_up_threshold = limit_up_threshold
         self.first_board_volume_ratio = first_board_volume_ratio
+        self.min_signal_one_days = max(3, int(min_signal_one_days))
+        self.min_history_days = max(1, int(min_history_days))
+        self.history_buffer_days = max(0, int(history_buffer_days))
         self.use_pool = use_pool
 
     def get_screener_code(self) -> str:
@@ -103,6 +109,33 @@ class ErBanHuiTiaoScreener(BaseScreener):
                 'display_name': 'First Board Amount Ratio',
                 'description': 'First board amount must be N times of previous day',
                 'group': 'Signal Conditions'
+            },
+            'MIN_SIGNAL_ONE_DAYS': {
+                'type': 'int',
+                'default': 3,
+                'min': 3,
+                'max': 30,
+                'display_name': 'Signal 1 minimum days',
+                'description': 'Minimum data days required to evaluate Signal 1',
+                'group': 'Basic Settings'
+            },
+            'MIN_HISTORY_DAYS': {
+                'type': 'int',
+                'default': 10,
+                'min': 1,
+                'max': 120,
+                'display_name': 'Minimum history days',
+                'description': 'Minimum historical days required before screening',
+                'group': 'Basic Settings'
+            },
+            'HISTORY_BUFFER_DAYS': {
+                'type': 'int',
+                'default': 10,
+                'min': 0,
+                'max': 120,
+                'display_name': 'History buffer days',
+                'description': 'Extra days added beyond LIMIT_DAYS when loading history data',
+                'group': 'Basic Settings'
             }
         }
 
@@ -121,7 +154,7 @@ class ErBanHuiTiaoScreener(BaseScreener):
             Dictionary with first_idx, second_idx, first_open, first_amount, second_amount
             or None if not found
         """
-        if len(df) < 3:  # Need at least previous day + two consecutive boards
+        if len(df) < self.min_signal_one_days:
             return None
 
         # Search backwards, i is first board index
@@ -247,8 +280,8 @@ class ErBanHuiTiaoScreener(BaseScreener):
     def screen_stock(self, code: str, name: str) -> Optional[Dict]:
         """Screen single stock"""
         # Get sufficient data (14 days + few days after for Signal 3 judgment)
-        df = self.get_stock_data(code, days=self.limit_days + 10)
-        if df is None or len(df) < 10:
+        df = self.get_stock_data(code, days=self.limit_days + self.history_buffer_days)
+        if df is None or len(df) < self.min_history_days:
             return None
 
         # Ensure data is sorted by date

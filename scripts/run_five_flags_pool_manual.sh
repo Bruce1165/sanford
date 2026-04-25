@@ -12,6 +12,7 @@ TASK_SCRIPT="$SCRIPT_DIR/run_five_flags_pool_screening.py"
 # Parse arguments
 MAX_WORKERS=4
 POOL_IDS=""
+AS_OF_DATE=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -23,12 +24,17 @@ while [[ $# -gt 0 ]]; do
             POOL_IDS=$2
             shift 2
             ;;
+        --as-of-date)
+            AS_OF_DATE=$2
+            shift 2
+            ;;
         --help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
             echo "  --workers N       Number of parallel workers (default: 4)"
             echo "  --pool-ids IDS   Specific pool IDs to screen (comma-separated)"
+            echo "  --as-of-date D   Catch-up target date (YYYY-MM-DD, resolves to recent trading day)"
             echo "  --help           Show this help message"
             exit 0
             ;;
@@ -50,6 +56,10 @@ PYTHON_CMD="$PYTHON_PATH $TASK_SCRIPT"
 if [ ! -z "$POOL_IDS" ]; then
     echo "🎯 Specific pools: $POOL_IDS"
     PYTHON_CMD="$PYTHON_CMD --pool-ids $POOL_IDS"
+fi
+if [ ! -z "$AS_OF_DATE" ]; then
+    echo "📅 Target date: $AS_OF_DATE"
+    PYTHON_CMD="$PYTHON_CMD --as-of-date $AS_OF_DATE"
 fi
 
 echo "👷 Parallel workers: $MAX_WORKERS"
