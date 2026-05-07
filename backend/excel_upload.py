@@ -46,7 +46,7 @@ class ExcelUploadHandler:
             self.conn.close()
             self.conn = None
 
-    def validate_file_format(self, file_path: str) -> Tuple[bool, str, Dict]:
+    def validate_file_format(self, file_path: str, original_filename: str = None) -> Tuple[bool, str, Dict]:
         """
         Validate file format before processing
 
@@ -57,12 +57,16 @@ class ExcelUploadHandler:
         metadata = {}
 
         # Check file extension
-        if file_path.suffix not in ['.xls', '.xlsx']:
+        if original_filename:
+            ext = Path(str(original_filename)).suffix.lower()
+        else:
+            ext = file_path.suffix.lower()
+        if ext not in ['.xls', '.xlsx']:
             return False, "文件格式错误：只支持 .xls 或 .xlsx 文件", metadata
 
         # Extract date from filename
-        filename = file_path.name
-        date_match = re.search(r'全部Ａ股(\d{8})\.', filename)
+        filename = Path(str(original_filename)).name if original_filename else file_path.name
+        date_match = re.search(r'全部[ＡA]股[_-]?(\d{8})\.', filename)
         if not date_match:
             return False, "文件名格式错误：应为 '全部Ａ股YYYYMMDD.xls'", metadata
 
@@ -468,7 +472,7 @@ class ExcelUploadHandler:
 
         return results
 
-    def process_upload(self, file_path: str, force_update: bool = False) -> Dict[str, Any]:
+    def process_upload(self, file_path: str, force_update: bool = False, original_filename: str = None) -> Dict[str, Any]:
         """
         Process complete upload workflow
 
@@ -490,7 +494,7 @@ class ExcelUploadHandler:
         }
 
         # Step 1: Validate file format
-        is_valid, error_msg, metadata = self.validate_file_format(file_path)
+        is_valid, error_msg, metadata = self.validate_file_format(file_path, original_filename=original_filename)
         if not is_valid:
             result['message'] = error_msg
             return result
@@ -553,7 +557,7 @@ class ExcelUploadHandler:
         return result
 
 
-def handle_excel_upload(file_path: str, force_update: bool = False) -> Dict[str, Any]:
+def handle_excel_upload(file_path: str, force_update: bool = False, original_filename: str = None) -> Dict[str, Any]:
     """
     Handle Excel file upload
 
@@ -566,7 +570,7 @@ def handle_excel_upload(file_path: str, force_update: bool = False) -> Dict[str,
         Result dictionary
     """
     handler = ExcelUploadHandler()
-    return handler.process_upload(file_path, force_update=force_update)
+    return handler.process_upload(file_path, force_update=force_update, original_filename=original_filename)
 
 
 def _normalize_cn_stock_code(raw_value: Any) -> Optional[str]:
@@ -746,7 +750,7 @@ def _sync_pool_sector_to_stock_meta(records: List[Dict[str, Optional[str]]]) -> 
         conn.close()
 
 
-def handle_lao_ya_tou_pool_upload(file_path: str, force_overwrite: bool = False) -> Dict[str, Any]:
+def handle_lao_ya_tou_pool_upload(file_path: str, force_overwrite: bool = False, original_filename: str = None) -> Dict[str, Any]:
     """
     Upload Lao Ya Tou pool file into lao_ya_tou_pool with two modes:
     - incremental append (default, idempotent by pool_biz_key)
@@ -756,7 +760,7 @@ def handle_lao_ya_tou_pool_upload(file_path: str, force_overwrite: bool = False)
         'status': 'error',
         'message': '',
         'mode': 'force_overwrite' if force_overwrite else 'incremental',
-        'file_name': Path(file_path).name
+        'file_name': Path(str(original_filename)).name if original_filename else Path(file_path).name
     }
 
     try:

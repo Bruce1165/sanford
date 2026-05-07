@@ -1,0 +1,51 @@
+{
+  "metadata": {
+    "version": "v1.0",
+    "last_updated": "2026-05-02T23:05:00",
+    "updated_by": "codex",
+    "strategy_id": "triple_screen_neil"
+  },
+  "display_name": "三重滤网策略（Neil）",
+  "description": "长周期趋势过滤 + 中周期回调择时 + 短周期入场触发。",
+  "category": "策略参数",
+  "parameters": {
+    "TIMING_RSI_THRESHOLD": {
+      "value": 50.0,
+      "display_name": "择时RSI阈值",
+      "description": "周线趋势向上时，日线 RSI14 低于该阈值视为回调择时满足",
+      "group": "核心参数",
+      "type": "float",
+      "min": 10.0,
+      "max": 60.0,
+      "default": 40.0
+    },
+    "ENTRY_LOOKBACK_DAYS": {
+      "value": 5,
+      "display_name": "入场触发窗口",
+      "description": "收盘价突破前N日最高价触发入场",
+      "group": "核心参数",
+      "type": "int",
+      "min": 2,
+      "max": 30,
+      "default": 5
+    },
+    "STOP_LOOKBACK_DAYS": {
+      "value": 10,
+      "display_name": "失效参考窗口",
+      "description": "收盘价跌破前N日最低价作为失效/止损参考",
+      "group": "核心参数",
+      "type": "int",
+      "min": 3,
+      "max": 60,
+      "default": 10
+    },
+    "NEW_ENTRY_RULE": {
+      "value": "today_true_prev_false",
+      "display_name": "新入场判定规则",
+      "description": "当日综合入场信号为真且前一交易日为假时判定为新入场",
+      "group": "信号口径",
+      "type": "str",
+      "default": "today_true_prev_false"
+    }
+  }
+}

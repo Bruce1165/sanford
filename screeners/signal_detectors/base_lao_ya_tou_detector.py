@@ -92,14 +92,23 @@ class BaseLaoYaTouDetector:
             conn = sqlite3.connect(DB_PATH)
             conn.row_factory = sqlite3.Row
 
+            required_days = max(
+                int(self.min_days or 0),
+                int(self.amplitude_lookback_days or 0),
+                int(self.ma30_period or 0) + 10,
+                int(self.local_high_window or 0) * 2 + 10,
+                260,
+            )
+
             query = """
                 SELECT trade_date, open, high, low, close, volume, amount, pct_change
                 FROM daily_prices
                 WHERE code = ?
                 AND trade_date <= ?
-                ORDER BY trade_date ASC
+                ORDER BY trade_date DESC
+                LIMIT ?
             """
-            df = pd.read_sql_query(query, conn, params=(stock_code, target_date))
+            df = pd.read_sql_query(query, conn, params=(stock_code, target_date, required_days))
             conn.close()
 
             if len(df) < self.min_days:

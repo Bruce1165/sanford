@@ -156,6 +156,21 @@ label { color: var(--neo-text-mid) !important; }
 ::-webkit-scrollbar-thumb { background:rgba(255,203,5,0.18); border-radius:3px; }
 ::-webkit-scrollbar-thumb:hover { background:rgba(255,203,5,0.38); }
 
+/* Neutral scrollbar inside config modal (avoid yellow thumb on white UI) */
+.config-modal-container {
+  scrollbar-color: rgba(148, 163, 184, 0.75) transparent;
+  scrollbar-width: thin;
+}
+.config-modal-container ::-webkit-scrollbar { width: 6px; height: 6px; }
+.config-modal-container ::-webkit-scrollbar-track { background: transparent; }
+.config-modal-container ::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.75);
+  border-radius: 6px;
+}
+.config-modal-container ::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.95);
+}
+
 /* ── Modal ── */
 /* Limit scope to app-owned modal classes to avoid affecting external element picker overlays. */
 .neo-app .neo-modal-overlay,
@@ -860,8 +875,14 @@ label { color: var(--neo-text-mid) !important; }
 
 .config-modal-header h3 {
   margin: 0;
-  color: #111827;
+  color: #374151 !important;
   font-size: 18px;
+}
+
+.config-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .config-modal-close {
@@ -876,7 +897,7 @@ label { color: var(--neo-text-mid) !important; }
 
 .config-modal-body {
   flex: 1;
-  overflow: auto;
+  overflow: hidden;
   padding: 0;
 }
 
@@ -1251,6 +1272,11 @@ label { color: var(--neo-text-mid) !important; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+div#root > div.neo-app > div.neo-workspace > aside.neo-col-left > div.neo-col-content > div.sl-wrap > div.sl-check-section > div.sl-check-row:nth-child(3) > button.sl-check-btn {
+  width: 60px;
+  min-width: 60px;
 }
 
 .neo-app .sl-card {

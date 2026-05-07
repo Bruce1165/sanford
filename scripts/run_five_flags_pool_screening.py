@@ -21,7 +21,7 @@ import logging
 import hashlib
 import re
 import sqlite3
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -42,21 +42,6 @@ except Exception:
     from pool_screener_adapter import ScreenerAdapter
     from database.lao_ya_tou_pool import LaoYaTouPoolRepository
     from database.lao_ya_tou_five_flags import LaoYaTouFiveFlagsRepository
-
-try:
-    from scripts.trading_calendar import (
-        get_recent_trading_day,
-        get_next_trading_day,
-        is_trading_day,
-        get_latest_db_trade_date
-    )
-except Exception:
-    from trading_calendar import (
-        get_recent_trading_day,
-        get_next_trading_day,
-        is_trading_day,
-        get_latest_db_trade_date
-    )
 
 try:
     from scripts.flow_engine.flow_config import load_flow_plan
@@ -154,23 +139,19 @@ class FiveFlagsPoolScreening:
             return None
 
     def _resolve_target_trade_date(self, as_of_date: Optional[str]) -> str:
+        latest_db_trade_date = self._get_latest_trade_date_from_db()
+        if latest_db_trade_date is None:
+            raise ValueError(f"no price data found in {self.db_path}")
+
         if as_of_date:
             dt = self._parse_date_str(as_of_date)
             if dt is None:
                 raise ValueError(f"invalid as_of_date: {as_of_date}, expected YYYY-MM-DD")
-            calendar_target = get_recent_trading_day(dt)
-        else:
-            calendar_target = get_recent_trading_day(date.today())
-
-        latest_db_trade_date = self._get_latest_trade_date_from_db()
-        if latest_db_trade_date is not None and latest_db_trade_date < calendar_target:
-            logger.info(
-                "Price data lag detected, fallback target_trade_date from %s to latest_db_trade_date %s",
-                calendar_target.strftime('%Y-%m-%d'),
-                latest_db_trade_date.strftime('%Y-%m-%d')
-            )
-            return latest_db_trade_date.strftime('%Y-%m-%d')
-        return calendar_target.strftime('%Y-%m-%d')
+            resolved = self._get_recent_trade_date_from_db(dt)
+            if resolved is None:
+                raise ValueError(f"as_of_date {as_of_date} is earlier than first available trade_date in daily_prices")
+            return resolved.strftime('%Y-%m-%d')
+        return latest_db_trade_date.strftime('%Y-%m-%d')
 
     def _get_latest_trade_date_from_db(self) -> Optional[date]:
         conn = None
@@ -189,6 +170,60 @@ class FiveFlagsPoolScreening:
             if conn is not None:
                 conn.close()
 
+    def _get_recent_trade_date_from_db(self, reference_date: date) -> Optional[date]:
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30)
+            row = conn.execute(
+                'SELECT MAX(trade_date) FROM daily_prices WHERE trade_date <= ?',
+                (reference_date.strftime('%Y-%m-%d'),)
+            ).fetchone()
+            if not row or row[0] is None:
+                return None
+            return self._parse_date_str(str(row[0])[:10])
+        except Exception as exc:
+            logger.warning("Failed to resolve recent trade date from %s: %s", self.db_path, exc)
+            return None
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def _get_next_trade_date_from_db(self, reference_date: date) -> Optional[date]:
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30)
+            row = conn.execute(
+                'SELECT MIN(trade_date) FROM daily_prices WHERE trade_date > ?',
+                (reference_date.strftime('%Y-%m-%d'),)
+            ).fetchone()
+            if not row or row[0] is None:
+                return None
+            return self._parse_date_str(str(row[0])[:10])
+        except Exception as exc:
+            logger.warning("Failed to resolve next trade date from %s: %s", self.db_path, exc)
+            return None
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def _get_next_or_same_trade_date_from_db(self, reference_date: date) -> Optional[date]:
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30)
+            row = conn.execute(
+                'SELECT MIN(trade_date) FROM daily_prices WHERE trade_date >= ?',
+                (reference_date.strftime('%Y-%m-%d'),)
+            ).fetchone()
+            if not row or row[0] is None:
+                return None
+            return self._parse_date_str(str(row[0])[:10])
+        except Exception as exc:
+            logger.warning("Failed to resolve next-or-same trade date from %s: %s", self.db_path, exc)
+            return None
+        finally:
+            if conn is not None:
+                conn.close()
+
     def _resolve_pool_start_date(self, pool_data: dict) -> Optional[str]:
         """
         Resolve catch-up start date with user-confirmed priority:
@@ -197,13 +232,16 @@ class FiveFlagsPoolScreening:
         """
         last_screened = self._parse_date_str(pool_data.get('last_screened_date'))
         if last_screened is not None:
-            return get_next_trading_day(last_screened).strftime('%Y-%m-%d')
+            next_trade_date = self._get_next_trade_date_from_db(last_screened)
+            if next_trade_date is not None:
+                return next_trade_date.strftime('%Y-%m-%d')
+            return None
 
         start_date_value = self._parse_date_str(pool_data.get('start_date'))
         if start_date_value is not None:
-            if is_trading_day(start_date_value):
-                return start_date_value.strftime('%Y-%m-%d')
-            return get_next_trading_day(start_date_value - timedelta(days=1)).strftime('%Y-%m-%d')
+            next_or_same = self._get_next_or_same_trade_date_from_db(start_date_value)
+            if next_or_same is not None:
+                return next_or_same.strftime('%Y-%m-%d')
         return None
 
     def _is_valid_a_share_stock(self, pool_data: dict) -> Tuple[bool, str]:
@@ -381,7 +419,21 @@ class FiveFlagsPoolScreening:
         if pool_ids is not None:
             pools = self.pool_repo.find_pools_by_ids(pool_ids)
         else:
-            pools = self.pool_repo.find_all_pools_for_screening()
+            all_pools = self.pool_repo.find_all_pools_for_screening()
+            pools = []
+            latest_trade_date = self.target_trade_date
+            for pool in all_pools:
+                # Pending rule (must align with readiness guard):
+                # start_date <= latest_trade_date AND
+                # (last_screened_date is null OR last_screened_date < latest_trade_date)
+                start_date = str(pool.get('start_date') or '').strip()
+                last_screened = str(pool.get('last_screened_date') or '').strip()
+                if not start_date:
+                    continue
+                if start_date > latest_trade_date:
+                    continue
+                if (not last_screened) or (last_screened < latest_trade_date):
+                    pools.append(pool)
 
         return pools
 
@@ -468,6 +520,7 @@ class FiveFlagsPoolScreening:
                 logger.info("Pool %s skipped: already processed in progress file", pool_data.get('id'))
                 continue
             pool_failed = False
+            end_date = self.target_trade_date
             is_valid_stock, invalid_reason = self._is_valid_a_share_stock(pool_data)
             if not is_valid_stock:
                 logger.info(
@@ -476,10 +529,19 @@ class FiveFlagsPoolScreening:
                     pool_data.get('stock_code'),
                     invalid_reason
                 )
+                # Invalid/non-A-share pools should not remain pending forever.
+                # Mark as screened to current target date to prevent repeated re-trigger.
+                try:
+                    self.pool_repo.update_last_screened_date(pool_data['id'], end_date)
+                except Exception as e:
+                    logger.warning(
+                        "Pool %s invalid stock but failed to advance last_screened_date: %s",
+                        pool_data.get('id'),
+                        e
+                    )
                 failed_pools += 1
                 continue
             start_date = self._resolve_pool_start_date(pool_data)
-            end_date = self.target_trade_date
             if not start_date:
                 logger.warning(
                     "Pool %s (%s) skipped: start_date is required when last_screened_date is absent",
@@ -512,6 +574,17 @@ class FiveFlagsPoolScreening:
                     start_date,
                     end_date
                 )
+                # Keep readiness state in sync: if no local trading bars exist in
+                # the catch-up window, advance last_screened_date to target date
+                # to avoid perpetual pending/re-trigger.
+                try:
+                    self.pool_repo.update_last_screened_date(pool_data['id'], end_date)
+                except Exception as e:
+                    logger.warning(
+                        "Pool %s no-trading-data but failed to advance last_screened_date: %s",
+                        pool_data.get('id'),
+                        e
+                    )
                 continue
 
             # For each pool, run configured flow batches. Screeners inside one batch run in parallel.
@@ -625,10 +698,44 @@ class FiveFlagsPoolScreening:
         3. Batch insert all results
         """
         existing_progress = self.load_progress_file()
+        resume_mode = False
         if isinstance(existing_progress, dict):
+            try:
+                prev_target = str(existing_progress.get('target_trade_date') or '').strip() or None
+                prev_flow_id = str(existing_progress.get('flow_id') or '').strip() or None
+                prev_total = int(existing_progress.get('total_stocks') or 0)
+                prev_done = int(existing_progress.get('processed_stocks') or 0) + int(existing_progress.get('failed_stocks') or 0)
+            except Exception:
+                prev_target = None
+                prev_flow_id = None
+                prev_total = 0
+                prev_done = 0
+
             processed_pool_ids = existing_progress.get('processed_pool_ids')
-            if isinstance(processed_pool_ids, list):
-                self.progress['processed_pool_ids'] = list({int(x) for x in processed_pool_ids if isinstance(x, int) or str(x).isdigit()})
+            legacy_resume = (
+                not prev_target
+                and not prev_flow_id
+                and isinstance(processed_pool_ids, list)
+                and len(processed_pool_ids) > 0
+                and prev_total > 0
+                and prev_done < prev_total
+            )
+            strict_resume = (
+                prev_target == self.target_trade_date
+                and prev_flow_id == self.flow_id
+                and prev_total > 0
+                and prev_done < prev_total
+            )
+
+            if strict_resume or legacy_resume:
+                resume_mode = True
+                if isinstance(processed_pool_ids, list):
+                    self.progress['processed_pool_ids'] = list({
+                        int(x) for x in processed_pool_ids if isinstance(x, int) or str(x).isdigit()
+                    })
+
+        if not resume_mode:
+            self.progress['processed_pool_ids'] = []
 
         self.progress['start_time'] = datetime.now().isoformat()
 
@@ -636,7 +743,15 @@ class FiveFlagsPoolScreening:
         if self.progress.get('processed_pool_ids'):
             pools = [p for p in pools if p.get('id') not in set(self.progress['processed_pool_ids'])]
 
-        logger.info(f"Starting screening for {len(pools)} pools with {len(FIVE_FLAGS_SCREENERS)} screeners")
+        if pool_ids is None:
+            logger.info(
+                "Starting screening for %s pending pools (latest_trade_date=%s) with %s screeners",
+                len(pools),
+                self.target_trade_date,
+                len(FIVE_FLAGS_SCREENERS)
+            )
+        else:
+            logger.info(f"Starting screening for {len(pools)} pools with {len(FIVE_FLAGS_SCREENERS)} screeners")
         logger.info(
             f"Flow config loaded: {self.flow_id}, type={self.flow_plan_type}, batches={self.flow_batches}"
         )

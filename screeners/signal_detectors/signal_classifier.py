@@ -31,6 +31,8 @@ class SignalClassifier:
                  min_gap: float, max_gap: float,
                  signal_1_min_gap: float, signal_1_volume_ratio_min: float,
                  signal_2_confirm_days: int,
+                 signal_2_min_confirm_days: int,
+                 signal_2_cross_lookback_days: int,
                  signal_3_breakout_lookback: int):
         """
         Initialize signal classifier.
@@ -58,6 +60,8 @@ class SignalClassifier:
         self.signal_1_min_gap = signal_1_min_gap
         self.signal_1_volume_ratio_min = signal_1_volume_ratio_min
         self.signal_2_confirm_days = signal_2_confirm_days
+        self.signal_2_min_confirm_days = signal_2_min_confirm_days
+        self.signal_2_cross_lookback_days = signal_2_cross_lookback_days
         self.signal_3_breakout_lookback = signal_3_breakout_lookback
 
     def detect_crossing(self, df: pd.DataFrame, fast_col: str, slow_col: str,
@@ -184,7 +188,9 @@ class SignalClassifier:
         3. Volume contraction followed by expansion
         4. Confirmation over subsequent days
         """
-        for i in range(len(df) - 1, max(0, len(df) - self.signal_2_confirm_days - 2), -1):
+        last_index = len(df) - 1
+        earliest_index = max(0, len(df) - self.signal_2_cross_lookback_days)
+        for i in range(last_index, earliest_index - 1, -1):
             # Check for golden cross
             crossing = self.detect_crossing(df, 'ma5', 'ma10', i)
             if crossing != 'golden_cross':
@@ -208,32 +214,34 @@ class SignalClassifier:
                 continue
 
             # Check confirmation
-            if i + self.signal_2_confirm_days >= len(df):
+            max_confirm = min(self.signal_2_confirm_days, last_index - i)
+            if max_confirm < self.signal_2_min_confirm_days:
                 continue
 
-            confirmed = True
-            for j in range(1, self.signal_2_confirm_days + 1):
+            confirmed_days = 0
+            for j in range(1, max_confirm + 1):
                 ma5_c = df.iloc[i + j]['ma5']
                 ma10_c = df.iloc[i + j]['ma10']
                 ma30_c = df.iloc[i + j]['ma30']
 
                 if not (ma5_c > ma10_c > ma30_c):
-                    confirmed = False
                     break
+                confirmed_days += 1
 
-            if not confirmed:
+            if confirmed_days < self.signal_2_min_confirm_days:
                 continue
 
             # Calculate confidence
             current_volume_ratio = df.iloc[i]['volume_ratio']
             confidence = self._calculate_confidence_signal_2(
-                df, i, current_gap, current_volume_ratio, confirmed
+                df, i, current_gap, current_volume_ratio, confirmed_days
             )
 
             return {
                 'signal_type': 'signal_2',
                 'index': i,
                 'confidence': confidence,
+                'confirmed_days': confirmed_days,
                 'gap': current_gap,
                 'volume_ratio': current_volume_ratio,
                 'price': df.iloc[i]['close'],
@@ -362,7 +370,7 @@ class SignalClassifier:
 
     def _calculate_confidence_signal_2(self, df: pd.DataFrame, index: int,
                                        gap: float, volume_ratio: float,
-                                       confirmed: bool) -> float:
+                                       confirmed_days: int) -> float:
         """Calculate confidence for Signal 2."""
         confidence = 0
 
@@ -398,8 +406,8 @@ class SignalClassifier:
             confidence += 10
 
         # Confirmation score
-        if confirmed:
-            confidence += 20
+        if confirmed_days >= self.signal_2_min_confirm_days:
+            confidence += min(20, confirmed_days * 4)
 
         return min(confidence, 100)
 

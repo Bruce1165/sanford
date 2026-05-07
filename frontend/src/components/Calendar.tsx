@@ -174,9 +174,10 @@ interface DateInputProps {
   value: string;
   onChange: (date: string) => void;
   inputRef?: React.RefObject<HTMLInputElement | null>;
+  style?: React.CSSProperties;
 }
 
-function DateInput({ value, onChange, inputRef }: DateInputProps) {
+function DateInput({ value, onChange, inputRef, style }: DateInputProps) {
   return (
     <input
       ref={inputRef}
@@ -185,7 +186,7 @@ function DateInput({ value, onChange, inputRef }: DateInputProps) {
       onChange={(e) => onChange(e.target.value)}
       placeholder="YYYY-MM-DD"
       className="wsj-input"
-      style={{ width: '120px' }}
+      style={{ width: '120px', ...style }}
       autoComplete="off"
       autoCorrect="off"
       autoCapitalize="off"
@@ -224,15 +225,17 @@ export function Calendar({ value, onChange, minDate, maxDate }: CalendarProps) {
 
 interface CalendarButtonProps {
   onClick: () => void;
+  style?: React.CSSProperties;
 }
 
-export function CalendarButton({ onClick }: CalendarButtonProps) {
+export function CalendarButton({ onClick, style }: CalendarButtonProps) {
   return (
     <button
       className="calendar-toggle"
       onClick={onClick}
       type="button"
       aria-label="Open calendar"
+      style={style}
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
@@ -249,6 +252,8 @@ interface CalendarWithButtonProps extends CalendarProps {
   showPicker: boolean;
   onTogglePicker: () => void;
   onSelectDate: (date: string) => void;
+  inputStyle?: React.CSSProperties;
+  buttonStyle?: React.CSSProperties;
 }
 
 export function CalendarWithButton({
@@ -259,6 +264,8 @@ export function CalendarWithButton({
   showPicker,
   onTogglePicker,
   onSelectDate,
+  inputStyle,
+  buttonStyle,
 }: CalendarWithButtonProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   // refReady removed — DateInput is always rendered so inputRef is always set
@@ -266,8 +273,8 @@ export function CalendarWithButton({
 
   return (
     <>
-      <DateInput value={value} onChange={onChange} inputRef={inputRef} />
-      <CalendarButton onClick={onTogglePicker} />
+      <DateInput value={value} onChange={onChange} inputRef={inputRef} style={inputStyle} />
+      <CalendarButton onClick={onTogglePicker} style={buttonStyle} />
       {showPicker && (
         <CalendarPicker
           value={value}

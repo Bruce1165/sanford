@@ -4,9 +4,15 @@ import './cockpit.css';
 import * as echarts from 'echarts';
 import { createChart, CandlestickSeries, HistogramSeries, LineSeries, ColorType, CrosshairMode } from 'lightweight-charts';
 import { formatDate, formatStockCode, isValidDate, isValidStockCode, toISODate } from './utils/format';
+import type { StrategyId } from './api';
 import FiveFlagsMonitor from './pages/FiveFlagsMonitor';
+import Assistant from './pages/Assistant';
+import StrategyRunsView from './pages/StrategyRuns';
+import CupHandleLab from './pages/CupHandleLab';
 import { CalendarWithButton } from './components/Calendar';
-import { ScreenerConfig } from './components/ScreenerConfig';
+import { ScreenerConfig, type ScreenerConfigHandle } from './components/ScreenerConfig';
+import { Button, Modal } from 'antd';
+import { ReloadOutlined, SaveOutlined } from '@ant-design/icons';
 
 // Backend API configuration
 // Use proxy in development, auto-detect in production
@@ -97,11 +103,19 @@ function App() {
       return false;
     }
   });
-  const [dashboardMidCollapsed, setDashboardMidCollapsed] = useState(() => {
+  const [strategyMenuOpen, setStrategyMenuOpen] = useState(() => {
     try {
-      return window.localStorage.getItem('neo_dashboard_mid_collapsed') === '1';
+      return window.localStorage.getItem('neo_strategy_menu_open') !== '0';
     } catch {
-      return false;
+      return true;
+    }
+  });
+  const [strategyLab, setStrategyLab] = useState<StrategyId>(() => {
+    try {
+      const v = window.localStorage.getItem('neo_strategy_lab') || 'triple_screen';
+      return (v === 'neil_turtle_short' ? 'neil_turtle_short' : 'triple_screen') as StrategyId;
+    } catch {
+      return 'triple_screen';
     }
   });
 
@@ -112,16 +126,24 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem('neo_dashboard_left_collapsed', dashboardLeftCollapsed ? '1' : '0');
   }, [dashboardLeftCollapsed]);
-
   useEffect(() => {
-    window.localStorage.setItem('neo_dashboard_mid_collapsed', dashboardMidCollapsed ? '1' : '0');
-  }, [dashboardMidCollapsed]);
+    window.localStorage.setItem('neo_strategy_menu_open', strategyMenuOpen ? '1' : '0');
+  }, [strategyMenuOpen]);
+  useEffect(() => {
+    window.localStorage.setItem('neo_strategy_lab', strategyLab);
+  }, [strategyLab]);
 
   // Update URL when tab changes
-  const handleTabChange = (tabId: string) => {
+  const handleTabChange = (tabId: string, extra?: Record<string, string | undefined>) => {
     setActiveTab(tabId);
     const url = new URL(window.location.href);
     url.searchParams.set('tab', tabId);
+    const extraObj = extra || {};
+    Object.keys(extraObj).forEach((k) => {
+      const v = extraObj[k];
+      if (v == null || v === '') url.searchParams.delete(k);
+      else url.searchParams.set(k, v);
+    });
     window.history.replaceState({}, '', url.toString());
   };
 
@@ -172,9 +194,23 @@ function App() {
           </div>
         </div>
         <div className="neo-topbar-center">
-          <h1 className="logo">NEO TERMINAL</h1>
+          <h1 className="logo">量化选股控制台</h1>
         </div>
         <div className="neo-topbar-right">
+          <button
+            className="neo-theme-toggle"
+            onClick={() => handleTabChange(activeTab === 'assistant' ? 'screeners' : 'assistant')}
+            title={activeTab === 'assistant' ? 'Dashboard' : 'Assistant'}
+          >
+            {activeTab === 'assistant' ? 'Dashboard' : 'Assistant'}
+          </button>
+          <button
+            className="neo-theme-toggle"
+            onClick={() => handleTabChange(activeTab === 'cup-handle-lab' ? 'screeners' : 'cup-handle-lab')}
+            title={activeTab === 'cup-handle-lab' ? 'Dashboard' : 'Cup Lab'}
+          >
+            {activeTab === 'cup-handle-lab' ? 'Dashboard' : 'Cup Lab'}
+          </button>
           <button
             className="neo-theme-toggle"
             onClick={() => setTheme(prev => (prev === 'dark' ? 'light' : 'dark'))}
@@ -279,46 +315,226 @@ function App() {
         </div>
       )}
 
-      {/* ── Three-Column Layout ── */}
-      <div
-        className={`neo-workspace${dashboardLeftCollapsed ? ' neo-left-collapsed' : ''}${dashboardMidCollapsed ? ' neo-mid-collapsed' : ''}`}
-        onClick={() => setShowHealth(false)}
-      >
+      {activeTab === 'assistant' ? (
+        <div onClick={() => setShowHealth(false)} style={{ width: '100%' }}>
+          <Assistant theme={theme} />
+        </div>
+      ) : (
+        <div className={`neo-workspace neo-dashboard-b${dashboardLeftCollapsed ? ' neo-left-collapsed' : ''}`} onClick={() => setShowHealth(false)}>
+          <aside className="neo-col-left" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <button
+              className="neo-col-collapse-btn neo-col-collapse-left"
+              onClick={() => setDashboardLeftCollapsed((prev) => !prev)}
+              title={dashboardLeftCollapsed ? '展开导航' : '折叠导航'}
+            >
+              {dashboardLeftCollapsed ? '▶' : '◀'}
+            </button>
+            <div className="neo-col-header" style={{ borderBottomColor: 'rgba(255,203,5,0.10)' }}>
+              <span className="neo-col-title" style={{ fontSize: 12, textTransform: 'none' }}>Neo Menue</span>
+            </div>
+            <div className="neo-col-content" style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
 
-        {/* LEFT — Screeners (22%) */}
-        <aside className="neo-col-left">
-          <button
-            className="neo-col-collapse-btn neo-col-collapse-left"
-            onClick={() => setDashboardLeftCollapsed((prev) => !prev)}
-            title={dashboardLeftCollapsed ? '展开左区' : '折叠左区'}
-          >
-            {dashboardLeftCollapsed ? '▶' : '◀'}
-          </button>
-          <div className="neo-col-content">
-            <ScreenersView screeners={screeners} loading={loading} />
-          </div>
-        </aside>
+              {[
+                { key: 'screeners', label: '筛选器运行/管理', hint: '配置 / 运行 / 管理' },
+                { key: 'results', label: '结果下载/查询', hint: '查询 / 列表 / 详情' },
+                { key: 'monitor', label: '老鸭头五图', hint: '五旗 / 命中矩阵' },
+              ].map((item) => {
+                const active = activeTab === item.key;
+                return (
+                  <button
+                    key={item.key}
+                    onClick={() => handleTabChange(item.key as any)}
+                    style={{
+                      width: '100%',
+                      textAlign: 'left',
+                      border: 'none',
+                      background: active ? 'rgba(255,203,5,0.12)' : 'transparent',
+                      borderLeft: active ? '3px solid #FFCB05' : '3px solid transparent',
+                      color: active ? '#FFCB05' : 'rgba(255,255,255,0.80)',
+                      padding: dashboardLeftCollapsed ? '10px 10px' : '10px 12px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 2,
+                    }}
+                  >
+                    <span style={{ fontSize: 13, fontWeight: 800 }}>{dashboardLeftCollapsed ? item.label.slice(0, 1) : item.label}</span>
+                    {!dashboardLeftCollapsed && <span style={{ fontSize: 11, color: active ? 'rgba(255,203,5,0.85)' : 'rgba(255,255,255,0.45)' }}>{item.hint}</span>}
+                  </button>
+                );
+              })}
 
-        {/* MIDDLE — Results + Detail (38%) */}
-        <section className="neo-col-mid">
-          <button
-            className="neo-col-collapse-btn neo-col-collapse-mid"
-            onClick={() => setDashboardMidCollapsed((prev) => !prev)}
-            title={dashboardMidCollapsed ? '展开中区' : '折叠中区'}
-          >
-            {dashboardMidCollapsed ? '▶' : '◀'}
-          </button>
-          <div className="neo-col-content">
-            <ResultsView theme={theme} screeners={screeners} selectedScreener={selectedScreener} setSelectedScreener={setSelectedScreener} />
-          </div>
-        </section>
+              <div style={{ height: 10 }} />
+              {!dashboardLeftCollapsed && <div style={{ padding: '6px 12px', color: 'rgba(255,255,255,0.45)', fontSize: 11, letterSpacing: '0.12em' }}>实验室</div>}
+              {(() => {
+                const active = activeTab === 'cup-handle-lab';
+                return (
+                  <button
+                    onClick={() => handleTabChange('cup-handle-lab')}
+                    style={{
+                      width: '100%',
+                      textAlign: 'left',
+                      border: 'none',
+                      background: active ? 'rgba(255,203,5,0.12)' : 'transparent',
+                      borderLeft: active ? '3px solid #FFCB05' : '3px solid transparent',
+                      color: active ? '#FFCB05' : 'rgba(255,255,255,0.80)',
+                      padding: dashboardLeftCollapsed ? '10px 10px' : '10px 12px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 2,
+                    }}
+                  >
+                    <span style={{ fontSize: 13, fontWeight: 800 }}>{dashboardLeftCollapsed ? '杯' : '杯柄实验室'}</span>
+                    {!dashboardLeftCollapsed && <span style={{ fontSize: 11, color: active ? 'rgba(255,203,5,0.85)' : 'rgba(255,255,255,0.45)' }}>杯柄筛选 / 对比 / 交付</span>}
+                  </button>
+                );
+              })()}
 
-        {/* RIGHT — Monitoring (40%) */}
-          <section className="neo-col-right">
-            <FiveFlagsMonitor theme={theme} />
+              {(() => {
+                const active = activeTab === 'strategy';
+                return (
+                  <div style={{ borderTop: '1px solid rgba(255,203,5,0.10)', marginTop: 10, paddingTop: 6 }}>
+                    <button
+                      onClick={() => {
+                        setStrategyMenuOpen((v) => !v);
+                        if (dashboardLeftCollapsed) handleTabChange('strategy', { strategy_id: strategyLab });
+                      }}
+                      style={{
+                        width: '100%',
+                        textAlign: 'left',
+                        border: 'none',
+                        background: active ? 'rgba(255,203,5,0.12)' : 'transparent',
+                        borderLeft: active ? '3px solid #FFCB05' : '3px solid transparent',
+                        color: active ? '#FFCB05' : 'rgba(255,255,255,0.80)',
+                        padding: dashboardLeftCollapsed ? '10px 10px' : '10px 12px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 10,
+                      }}
+                    >
+                      <span style={{ fontSize: 13, fontWeight: 800 }}>{dashboardLeftCollapsed ? '交' : '交易策略实验室'}</span>
+                      {!dashboardLeftCollapsed && <span style={{ fontSize: 11, color: active ? 'rgba(255,203,5,0.85)' : 'rgba(255,255,255,0.45)' }}>{strategyMenuOpen ? '▼' : '▶'}</span>}
+                    </button>
+                    {strategyMenuOpen && !dashboardLeftCollapsed && (
+                      <div style={{ display: 'grid', gap: 2, padding: '4px 0 6px 0' }}>
+                        {[
+                          { id: 'triple_screen' as StrategyId, label: '三重滤网' },
+                          { id: 'neil_turtle_short' as StrategyId, label: '海龟短期策略' },
+                        ].map((s) => {
+                          const subActive = activeTab === 'strategy' && strategyLab === s.id;
+                          return (
+                            <button
+                              key={s.id}
+                              onClick={() => {
+                                setStrategyLab(s.id);
+                                handleTabChange('strategy', { strategy_id: s.id });
+                              }}
+                              style={{
+                                width: '100%',
+                                textAlign: 'left',
+                                border: 'none',
+                                background: subActive ? 'rgba(255,203,5,0.10)' : 'transparent',
+                                color: subActive ? '#FFCB05' : 'rgba(255,255,255,0.70)',
+                                padding: '8px 12px 8px 24px',
+                                cursor: 'pointer',
+                                fontSize: 12,
+                                fontWeight: subActive ? 800 : 600,
+                              }}
+                            >
+                              {s.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {(() => {
+                const active = activeTab === 'health';
+                return (
+                  <button
+                    onClick={() => handleTabChange('health')}
+                    style={{
+                      width: '100%',
+                      textAlign: 'left',
+                      border: 'none',
+                      background: active ? 'rgba(255,203,5,0.12)' : 'transparent',
+                      borderLeft: active ? '3px solid #FFCB05' : '3px solid transparent',
+                      color: active ? '#FFCB05' : 'rgba(255,255,255,0.80)',
+                      padding: dashboardLeftCollapsed ? '10px 10px' : '10px 12px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 2,
+                      marginTop: 10,
+                    }}
+                  >
+                    <span style={{ fontSize: 13, fontWeight: 800 }}>{dashboardLeftCollapsed ? '健' : '数据健康管理'}</span>
+                    {!dashboardLeftCollapsed && <span style={{ fontSize: 11, color: active ? 'rgba(255,203,5,0.85)' : 'rgba(255,255,255,0.45)' }}>数据健康 / 覆盖</span>}
+                  </button>
+                );
+              })()}
+            </div>
+          </aside>
+
+          <section className="neo-col-mid" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <div className="neo-col-header" style={{ borderBottomColor: 'rgba(255,203,5,0.10)' }}>
+              <span className="neo-col-title">
+                {activeTab === 'results'
+                  ? '结果下载/查询'
+                  : activeTab === 'screeners'
+                    ? '筛选器运行/管理'
+                    : activeTab === 'monitor'
+                      ? '老鸭头五图'
+                      : activeTab === 'health'
+                        ? '健康'
+                        : activeTab === 'cup-handle-lab'
+                          ? '杯柄实验室'
+                          : activeTab === 'strategy'
+                            ? '交易策略实验室'
+                            : '结果下载/查询'}
+              </span>
+              <span className="neo-col-badge">{activeTab}</span>
+            </div>
+            <div className="neo-col-content" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+              {activeTab === 'results' ? (
+                <div style={{ height: '100%', overflow: 'auto' }}>
+                  <ResultsView theme={theme} screeners={screeners} selectedScreener={selectedScreener} setSelectedScreener={setSelectedScreener} />
+                </div>
+              ) : activeTab === 'screeners' ? (
+                <div style={{ height: '100%', overflow: 'auto' }}>
+                  <ScreenersView screeners={screeners} loading={loading} />
+                </div>
+              ) : activeTab === 'monitor' ? (
+                <div style={{ height: '100%', overflow: 'auto' }}>
+                  <FiveFlagsMonitor theme={theme} />
+                </div>
+              ) : activeTab === 'health' ? (
+                <div style={{ height: '100%', overflow: 'auto', padding: 12 }}>
+                  <DataHealthInline />
+                </div>
+              ) : activeTab === 'cup-handle-lab' ? (
+                <div style={{ height: '100%', overflow: 'auto', padding: 12 }}>
+                  <CupHandleLab theme={theme} />
+                </div>
+              ) : activeTab === 'strategy' ? (
+                <div style={{ height: '100%', overflow: 'auto', padding: 12 }}>
+                  <StrategyRunsView theme={theme} initialStrategyId={strategyLab} embedded />
+                </div>
+              ) : (
+                <div style={{ height: '100%', overflow: 'auto' }}>
+                  <ResultsView theme={theme} screeners={screeners} selectedScreener={selectedScreener} setSelectedScreener={setSelectedScreener} />
+                </div>
+              )}
+            </div>
           </section>
-
-      </div>
+        </div>
+      )}
 
       {/* ── Mobile Tab Bar (< 640px) ── */}
       <nav className="neo-mobile-tabs">
@@ -326,7 +542,10 @@ function App() {
           { id:'screeners', icon:'🔍', label:'Screeners' },
           { id:'results',   icon:'📈', label:'Results'  },
           { id:'monitor',   icon:'👁️', label:'Monitor'  },
+          { id:'health',    icon:'🧪', label:'Health'   },
+          { id:'cup-handle-lab', icon:'☕', label:'Cup Lab' },
           { id:'strategy',  icon:'🧬', label:'Strategy' },
+          { id:'assistant', icon:'🤖', label:'Assistant' },
         ].map(item => (
           <div key={item.id}
             className={`neo-mobile-tab ${activeTab === item.id ? 'active' : ''}`}
@@ -470,11 +689,27 @@ function ScreenersView({ screeners, loading }: { screeners: Screener[], loading:
 
   // ── CONFIG MANAGEMENT state ──
   const [configMode, setConfigMode] = useState<{open: boolean, screener: Screener | null}>({ open: false, screener: null });
+  const configPanelRef = useRef<ScreenerConfigHandle | null>(null);
+  const [configUi, setConfigUi] = useState<{ unsavedChanges: boolean; saving: boolean }>({ unsavedChanges: false, saving: false });
+  const isStrategyTaskScreenerName = (name: string): boolean => {
+    const key = String(name || '').toLowerCase();
+    return ['turtle_short_neil', 'neil_turtle_short', 'triple_screen', 'triple_screen_neil'].includes(key);
+  };
+  const goToStrategyPage = () => {
+    const params = new URLSearchParams(window.location.search);
+    params.set('tab', 'strategy');
+    params.delete('screener');
+    window.location.search = params.toString();
+  };
 
   // Debug: Watch configMode changes
   useEffect(() => {
     // configMode changed - can add logging here if needed
   }, [configMode]);
+
+  useEffect(() => {
+    if (!configMode.open) setConfigUi({ unsavedChanges: false, saving: false });
+  }, [configMode.open]);
 
 
   // ── CHECK STOCK inline state ──
@@ -567,7 +802,7 @@ function ScreenersView({ screeners, loading }: { screeners: Screener[], loading:
   const categories = [
     ...preferredCategoryOrder.filter(category => groupedScreeners[category]?.length),
     ...extraCategories
-  ];
+  ].filter((c) => c !== '策略参数');
 
   useEffect(() => {
     if (categories.length === 0) {
@@ -723,7 +958,16 @@ function ScreenersView({ screeners, loading }: { screeners: Screener[], loading:
               >
                 CFG
               </button>
-              <button className="sl-run-btn" onClick={() => setRunModal({ open: true, screener: s })}>
+              <button
+                className="sl-run-btn"
+                onClick={() => {
+                  if (isStrategyTaskScreenerName(s.name)) {
+                    goToStrategyPage();
+                    return;
+                  }
+                  setRunModal({ open: true, screener: s });
+                }}
+              >
                 RUN
               </button>
             </div>
@@ -759,17 +1003,40 @@ function ScreenersView({ screeners, loading }: { screeners: Screener[], loading:
               <h3>
                 {configMode.screener.display_name || configMode.screener.name} - 参数配置
               </h3>
-              <button
-                onClick={() => setConfigMode({ open: false, screener: null })}
-                className="config-modal-close"
-              >
-                ×
-              </button>
+              <div className="config-modal-actions">
+                <Button
+                  icon={<ReloadOutlined />}
+                  onClick={() => configPanelRef.current?.reset()}
+                  disabled={!configUi.unsavedChanges || configUi.saving}
+                  size="small"
+                >
+                  重置
+                </Button>
+                <Button
+                  type="primary"
+                  icon={<SaveOutlined />}
+                  onClick={() => configPanelRef.current?.save()}
+                  disabled={!configUi.unsavedChanges}
+                  loading={configUi.saving}
+                  size="small"
+                  style={{ minWidth: '84px' }}
+                >
+                  保存配置
+                </Button>
+                <button
+                  onClick={() => setConfigMode({ open: false, screener: null })}
+                  className="config-modal-close"
+                >
+                  ×
+                </button>
+              </div>
             </div>
             <div className="config-modal-body">
               <ScreenerConfig
                 key={configMode.screener.name}
                 screenerName={configMode.screener.name}
+                ref={configPanelRef}
+                onUiStateChange={setConfigUi}
                 onClose={() => setConfigMode({ open: false, screener: null })}
               />
             </div>
@@ -791,6 +1058,15 @@ function RunScreenerModal({ screener, onClose }: { screener: Screener, onClose: 
   const [result, setResult] = useState<any>(null);
   const [stocks, setStocks] = useState<any[]>([]);
   const [error, setError] = useState('');
+  const isStrategyTaskScreener = ['turtle_short_neil', 'neil_turtle_short', 'triple_screen', 'triple_screen_neil']
+    .includes(String(screener.name || '').toLowerCase());
+
+  const goToStrategyPage = () => {
+    const params = new URLSearchParams(window.location.search);
+    params.set('tab', 'strategy');
+    params.delete('screener');
+    window.location.search = params.toString();
+  };
 
   const handleRun = async () => {
     setLoading(true);
@@ -798,6 +1074,14 @@ function RunScreenerModal({ screener, onClose }: { screener: Screener, onClose: 
     setResult(null);
 
     try {
+      // Strategy-style screeners are executed via /api/strategy-runs, not /api/screeners/{name}/run
+      if (isStrategyTaskScreener) {
+        goToStrategyPage();
+        onClose();
+        setLoading(false);
+        return;
+      }
+
       // Final validation and formatting
       const formattedDate = toISODate(date);
 
@@ -828,7 +1112,21 @@ function RunScreenerModal({ screener, onClose }: { screener: Screener, onClose: 
       }
       
       
-      if (data.error) throw new Error(data.message || data.error);
+      if (data.error) {
+        if (data.error === 'Non-trading day') {
+          const effective = String(data.effective_trade_date || '').trim();
+          const requested = String(data.requested_date || formattedDate || '').trim();
+          if (effective) {
+            setDate(effective);
+            setError(`该日期无可用行情数据（可能是非交易日或数据尚未更新）。已自动回退到 ${effective}（请求: ${requested}）。`);
+          } else {
+            setError(`该日期无可用行情数据（可能是非交易日或数据尚未更新）：${requested}`);
+          }
+          setLoading(false);
+          return;
+        }
+        throw new Error(data.message || data.error);
+      }
       setResult(data);
 
       // Fetch results for download
@@ -2422,6 +2720,8 @@ function DataHealthInline() {
   const [isUploading, setIsUploading] = useState(false);
   const [forceUpdate, setForceUpdate] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [uploadReportOpen, setUploadReportOpen] = useState(false);
+  const [uploadReport, setUploadReport] = useState<any>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -2442,35 +2742,63 @@ function DataHealthInline() {
     formData.append('file', file);
     formData.append('force_update', forceUpdate ? 'true' : 'false');
 
-    fetch(`${API_BASE}/data-health/upload`, {
-      method: 'POST',
-      body: formData,
-    })
-      .then(r => r.json())
-      .then(d => {
-        if (d.success) {
-          setUploadMsg(`✅ ${d.message}`);
-          // Show warnings if any
-          if (d.warnings && d.warnings.length > 0) {
-            setUploadMsg(prev => `${prev}\n⚠️ ${d.warnings.length} 条记录有警告`);
-          }
-          // Refresh health data after successful upload
-          fetch(`${API_BASE}/data-health`)
-            .then(r => r.json())
-            .then(d => { setHealth(d); });
+    (async () => {
+      try {
+        const resp = await fetch(`${API_BASE}/data-health/upload`, {
+          method: 'POST',
+          body: formData,
+          credentials: 'include',
+        });
+        const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+        let payload: any = null;
+        let rawText: string | null = null;
+        if (contentType.includes('application/json')) {
+          payload = await resp.json();
         } else {
-          setUploadMsg(`❌ ${d.error}`);
+          rawText = await resp.text();
         }
-      })
-      .catch((err) => {
+
+        if (payload && payload.success) {
+          const warnings = Array.isArray(payload.warnings) ? payload.warnings : [];
+          const errors = Array.isArray(payload.errors) ? payload.errors : [];
+          setUploadMsg(`✅ ${payload.message}${warnings.length ? ` ⚠️ ${warnings.length} 条记录有警告` : ''}`);
+          setUploadReport({
+            fileName: payload.file_name || file.name,
+            tradeDate: payload.trade_date || null,
+            status: payload.status || 'success',
+            message: payload.message || '',
+            dailyPrices: payload.daily_prices || null,
+            stockMetadata: payload.stock_metadata || null,
+            warnings,
+            errors,
+          });
+          setUploadReportOpen(true);
+          try {
+            const h = await fetch(`${API_BASE}/data-health`, { credentials: 'include' }).then((r) => r.json());
+            setHealth(h);
+          } catch {}
+          return;
+        }
+
+        if (payload && payload.error) {
+          setUploadMsg(`❌ ${payload.error}`);
+          return;
+        }
+
+        const text = (rawText || '').trim();
+        if (!resp.ok) {
+          setUploadMsg(`❌ 上传失败（HTTP ${resp.status}）${text ? `：${text.slice(0, 200)}` : ''}`);
+          return;
+        }
+        setUploadMsg(`❌ 上传失败${text ? `：${text.slice(0, 200)}` : ''}`);
+      } catch (err: any) {
         console.error('Upload failed:', err);
-        setUploadMsg('❌ 上传失败');
-      })
-      .finally(() => {
+        setUploadMsg(`❌ 上传失败：${err?.message || String(err)}`);
+      } finally {
         setIsUploading(false);
-        // Reset file input
         event.target.value = '';
-      });
+      }
+    })();
   };
 
   const closeUploadMsg = () => {
@@ -2523,6 +2851,34 @@ function DataHealthInline() {
   };
 
   const mono: React.CSSProperties = { fontFamily: "'SF Mono','Courier New',monospace" };
+  const buildUploadSummary = (r: any): string => {
+    if (!r) return '';
+    const dp = r.dailyPrices || {};
+    const sm = r.stockMetadata || {};
+    const failed = Number(dp.failed || 0) + Number(sm.failed || 0);
+    const warnCount = Array.isArray(r.warnings) ? r.warnings.length : 0;
+    const errCount = Array.isArray(r.errors) ? r.errors.length : 0;
+    const lines: string[] = [];
+    lines.push(`文件：${r.fileName || '–'}`);
+    lines.push(`日期：${r.tradeDate || '–'}`);
+    lines.push(`结果：${r.status || '–'}`);
+    if (r.message) lines.push(`摘要：${r.message}`);
+    if (dp.total != null) lines.push(`数据行数：${dp.total}`);
+    lines.push(`失败：${failed}`);
+    lines.push(`警告：${warnCount}`);
+    if (errCount) {
+      lines.push('');
+      lines.push('错误明细（最多 10 条）：');
+      for (const e of r.errors.slice(0, 10)) lines.push(`- ${String(e)}`);
+    }
+    if (warnCount) {
+      lines.push('');
+      lines.push(`警告明细（${warnCount} 条）：`);
+      for (const w of r.warnings) lines.push(`- ${String(w)}`);
+    }
+    return lines.join('\n');
+  };
+  const uploadSummaryText = buildUploadSummary(uploadReport);
 
   if (loading && !health) return (
     <div style={{ ...mono, background:'#050d1a', border:'1px solid rgba(255,203,5,0.12)',
@@ -2534,6 +2890,21 @@ function DataHealthInline() {
 
   return (
     <div className="dh-wrap" style={{ ...mono }}>
+      <Modal
+        title="上传结果小结"
+        open={uploadReportOpen}
+        onCancel={() => setUploadReportOpen(false)}
+        footer={[
+          <Button key="close" type="primary" onClick={() => setUploadReportOpen(false)}>
+            关闭
+          </Button>
+        ]}
+        width={720}
+        zIndex={3000}
+        getContainer={() => document.body}
+      >
+        <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{uploadSummaryText}</pre>
+      </Modal>
 
       {/* ── Header ── */}
       <div className="dh-header">

@@ -4,6 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
+## 工作约束（用户关键要求）
+
+- 永远使用中文回复。
+- 不猜测，不“蒸馏”用户需求，不扩大问题范围；只做被要求的事。
+- 给出建议/结论必须有可验证依据（代码、数据、日志、接口返回等），避免主观发挥。
+- 编码时关注语法与类型完整性；改动后必须能通过基本构建/语法检查。
+- 思维方式专业、严谨、聚焦；沟通客观，不使用讨好式表达。
+- 关键决策、关键步骤先充分沟通；确认无歧义后再实施。
+
 ## 🚨 LIGHTWEIGHT SESSION START VERIFICATION
 
 **⚠️ CRITICAL: Before ANY work, Claude Code MUST complete session start verification!**

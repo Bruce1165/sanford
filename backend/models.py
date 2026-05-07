@@ -287,6 +287,37 @@ def init_db():
         )
     ''')
 
+    # ========== Assistant Learning Tables ==========
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS assistant_rule_runs (
+            id TEXT PRIMARY KEY,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            trade_date DATE,
+            horizon TEXT,
+            codes TEXT,
+            requested_date DATE,
+            engine_version TEXT,
+            request_json TEXT NOT NULL,
+            response_json TEXT NOT NULL
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS assistant_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            run_id TEXT,
+            code TEXT,
+            rating INTEGER,
+            usefulness INTEGER,
+            issue_type TEXT,
+            comment TEXT,
+            tags TEXT,
+            extra_json TEXT
+        )
+    ''')
+
     # Create indexes for performance
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_screener_runs_lookup ON screener_runs(screener_name, run_date)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_screener_results_run_id ON screener_results(run_id)')
@@ -306,6 +337,11 @@ def init_db():
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_screener_config_history_name ON screener_config_history(screener_name)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_screener_config_history_version ON screener_config_history(screener_name, version)')
 
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_assistant_rule_runs_created_at ON assistant_rule_runs(created_at)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_assistant_rule_runs_trade_date ON assistant_rule_runs(trade_date)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_assistant_feedback_created_at ON assistant_feedback(created_at)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_assistant_feedback_run_id ON assistant_feedback(run_id)')
+
     conn.commit()
     conn.close()
     print(f"Database initialized at {DB_PATH}")
@@ -322,6 +358,104 @@ def get_stock_db_connection():
     conn = sqlite3.connect(stock_db_path, timeout=30)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def compute_five_flags_unprocessed_data_readiness(conn) -> dict:
+    """
+    Readiness guard for auto/manual default run.
+    Daily catch-up now runs on all pool stocks, so we require:
+    1) pool table has records
+    2) price table has at least one trade date
+    3) at least one pool row needs catch-up to latest_db_trade_date
+    Additionally:
+      - if no pending pools but some pools start after latest_db_trade_date,
+        surface a special reason to indicate A-share data may be not updated yet.
+    """
+    cursor = conn.cursor()
+
+    cursor.execute('SELECT COUNT(*) AS cnt FROM lao_ya_tou_pool')
+    pool_row = cursor.fetchone()
+    pool_count = int(pool_row['cnt']) if pool_row and 'cnt' in pool_row.keys() else 0
+    if pool_count <= 0:
+        return {
+            'ready': False,
+            'reason': 'no_pools',
+            'pool_count': 0,
+            'pending_pool_count': 0,
+            'future_pool_count': 0,
+            'latest_trade_date': None
+        }
+
+    cursor.execute('SELECT MAX(trade_date) AS latest_trade_date FROM daily_prices')
+    price_row = cursor.fetchone()
+    latest_trade_date = (
+        str(price_row['latest_trade_date'])
+        if price_row and price_row['latest_trade_date']
+        else None
+    )
+    if latest_trade_date is None:
+        return {
+            'ready': False,
+            'reason': 'no_price_data',
+            'pool_count': pool_count,
+            'pending_pool_count': 0,
+            'future_pool_count': 0,
+            'latest_trade_date': None
+        }
+
+    cursor.execute(
+        '''
+        SELECT COUNT(*) AS cnt
+        FROM lao_ya_tou_pool
+        WHERE COALESCE(start_date, '9999-12-31') > ?
+        ''',
+        (latest_trade_date,)
+    )
+    future_row = cursor.fetchone()
+    future_pool_count = int(future_row['cnt']) if future_row and 'cnt' in future_row.keys() else 0
+
+    cursor.execute(
+        '''
+        SELECT COUNT(*) AS cnt
+        FROM lao_ya_tou_pool
+        WHERE
+            COALESCE(start_date, '9999-12-31') <= ?
+            AND (
+                last_screened_date IS NULL
+                OR last_screened_date < ?
+            )
+        ''',
+        (latest_trade_date, latest_trade_date)
+    )
+    pending_row = cursor.fetchone()
+    pending_pool_count = int(pending_row['cnt']) if pending_row and 'cnt' in pending_row.keys() else 0
+    if pending_pool_count <= 0:
+        if future_pool_count > 0:
+            return {
+                'ready': False,
+                'reason': 'ashare_not_updated',
+                'pool_count': pool_count,
+                'pending_pool_count': 0,
+                'future_pool_count': future_pool_count,
+                'latest_trade_date': latest_trade_date
+            }
+        return {
+            'ready': False,
+            'reason': 'up_to_date',
+            'pool_count': pool_count,
+            'pending_pool_count': 0,
+            'future_pool_count': future_pool_count,
+            'latest_trade_date': latest_trade_date
+        }
+
+    return {
+        'ready': True,
+        'reason': 'ready',
+        'pool_count': pool_count,
+        'pending_pool_count': pending_pool_count,
+        'future_pool_count': future_pool_count,
+        'latest_trade_date': latest_trade_date
+    }
 
 # Screener operations
 def get_all_screeners():
@@ -1023,63 +1157,65 @@ def get_screener_config(screener_name: str) -> Optional[Dict]:
 def save_screener_config(screener_name: str, config: Dict, schema: Dict, change_summary: str = '', changed_by: str = 'system') -> str:
     """保存筛选器配置（自动备份旧版本）"""
     conn = get_db_connection()
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor()
+        conn.execute('BEGIN')
 
-    # Convert config and schema to JSON for storage
-    config_json = json.dumps(config, ensure_ascii=False) if config else '{}'
-    schema_json = json.dumps(schema, ensure_ascii=False) if schema else '{}'
+        config_json = json.dumps(config, ensure_ascii=False) if config else '{}'
+        schema_json = json.dumps(schema, ensure_ascii=False) if schema else '{}'
 
-    # 检查是否已存在
-    existing = get_screener_config(screener_name)
-
-    if existing:
-        # 备份旧版本到历史表
         cursor.execute('''
-            INSERT INTO screener_config_history
-            (screener_name, version, config_json, config_schema, change_summary, changed_by)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (
-            screener_name,
-            existing['current_version'],
-            json.dumps(existing['config_json'], ensure_ascii=False),
-            json.dumps(existing['config_schema'], ensure_ascii=False),
-            '自动备份: ' + change_summary,
-            changed_by
-        ))
-
-        # 生成新版本号
-        old_version = existing['current_version']
-        # 简单版本号递增：v1.0 -> v1.1
-        if old_version.startswith('v'):
-            try:
-                version_num = float(old_version[1:])
-                new_version = f"v{version_num + 0.1:.1f}"
-            except:
-                new_version = f"{old_version}.1"
-        else:
-            new_version = f"{old_version}.1"
-
-        # 更新当前配置
-        cursor.execute('''
-            UPDATE screener_configs
-            SET display_name = ?, description = ?, category = ?,
-                config_json = ?, config_schema = ?, current_version = ?, updated_at = CURRENT_TIMESTAMP
+            SELECT screener_name, current_version, config_json, config_schema
+            FROM screener_configs
             WHERE screener_name = ?
-        ''', (
-            config.get('display_name', ''),
-            config.get('description', ''),
-            config.get('category', ''),
-            config_json,
-            schema_json,
-            new_version,
-            screener_name
-        ))
+        ''', (screener_name,))
+        row = cursor.fetchone()
 
-        conn.commit()
-        conn.close()
-        return new_version
-    else:
-        # 创建新配置
+        if row:
+            old_version = row['current_version']
+            old_config_json = row['config_json'] or '{}'
+            old_schema_json = row['config_schema'] or '{}'
+
+            cursor.execute('''
+                INSERT INTO screener_config_history
+                (screener_name, version, config_json, config_schema, change_summary, changed_by)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (
+                screener_name,
+                old_version,
+                old_config_json,
+                old_schema_json,
+                '自动备份: ' + change_summary,
+                changed_by
+            ))
+
+            if isinstance(old_version, str) and old_version.startswith('v'):
+                try:
+                    version_num = float(old_version[1:])
+                    new_version = f"v{version_num + 0.1:.1f}"
+                except Exception:
+                    new_version = f"{old_version}.1"
+            else:
+                new_version = f"{old_version}.1"
+
+            cursor.execute('''
+                UPDATE screener_configs
+                SET display_name = ?, description = ?, category = ?,
+                    config_json = ?, config_schema = ?, current_version = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE screener_name = ?
+            ''', (
+                config.get('display_name', ''),
+                config.get('description', ''),
+                config.get('category', ''),
+                config_json,
+                schema_json,
+                new_version,
+                screener_name
+            ))
+
+            conn.commit()
+            return new_version
+
         new_version = 'v1.0'
         cursor.execute('''
             INSERT INTO screener_configs
@@ -1096,8 +1232,15 @@ def save_screener_config(screener_name: str, config: Dict, schema: Dict, change_
         ))
 
         conn.commit()
-        conn.close()
         return new_version
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 
 def get_screener_config_versions(screener_name: str, limit: int = 10) -> List[Dict]:
     """获取筛选器配置版本历史"""

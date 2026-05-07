@@ -750,11 +750,11 @@ class CoffeeCupHandleScreenerV4(BaseScreener):
 
         # 快速下跌阶段
         rapid_decline_days = self.params.RAPID_DECLINE_DAYS
-        decline_end_idx = left_rim_idx + rapid_decline_days
+        decline_end_idx = left_rim_idx + rapid_decline_days - 1
 
         # 快速上涨阶段
         rapid_ascent_days = self.params.RAPID_ASCENT_DAYS
-        ascent_start_idx = right_rim_idx - rapid_ascent_days
+        ascent_start_idx = right_rim_idx - rapid_ascent_days + 1
 
         # 验证索引有效
         if decline_end_idx >= right_rim_idx:
@@ -793,7 +793,7 @@ class CoffeeCupHandleScreenerV4(BaseScreener):
         # ========== 验证成交额（仅比较快速下跌期与快速上涨期总额） ==========
 
         # 定义快速下跌期和快速上涨期
-        decline_period = df.iloc[left_rim_idx + 1:decline_end_idx + 1]
+        decline_period = df.iloc[left_rim_idx:decline_end_idx + 1]
         ascent_period = df.iloc[ascent_start_idx:right_rim_idx + 1]
 
         if decline_period.empty:

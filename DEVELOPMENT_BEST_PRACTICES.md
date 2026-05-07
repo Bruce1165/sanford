@@ -8,6 +8,34 @@
 
 ## 🚀 Core Development Principles
 
+### 0. Hard Boundaries (Must Not Break)
+**These are non-negotiable business and engineering boundaries.**
+
+- **A-share data source boundary**:
+  - A-share行情“当日/最新有效交易日” must come from uploaded A-share data in DB only.
+  - Canonical value: `MAX(trade_date)` from `daily_prices`.
+  - NEVER replace this with system date or external source date.
+
+- **Five-Flags readiness boundary**:
+  - Screening readiness is per-stock/pool-row, not global guesswork.
+  - Catch-up start rule:
+    - if `last_screened_date` exists: start from next trading day;
+    - else: start from `start_date`.
+  - Stop at latest effective trade date from `daily_prices`.
+  - Only when all rows have `last_screened_date >= latest_effective_trade_date` should run be skipped.
+
+- **Function change impact boundary**:
+  - Before changing any function, you MUST assess impact scope first:
+    - all callers/call chain;
+    - input/output contract;
+    - side effects (DB/file/state/API behavior).
+  - After change, run focused regression checks on affected paths.
+  - No functional change is accepted without impact analysis + verification evidence.
+
+- **Rollback discipline boundary**:
+  - Do not revert broadly without root-cause evidence.
+  - Rollback scope must be minimal, targeted, and documented.
+
 ### 1. Planning First, Always
 **NEVER start coding without a plan**
 

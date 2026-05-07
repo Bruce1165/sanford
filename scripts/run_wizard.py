@@ -10,9 +10,11 @@ import argparse
 import sys
 import json
 from datetime import datetime
+from pathlib import Path
 
 # Add parent directory to path
-sys.path.insert(0, str(__file__).parent.parent / 'backend' / 'wizard'))
+workspace_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(workspace_root / 'backend' / 'wizard'))
 
 from coffee_cup_wizard import CoffeeCupWizard
 

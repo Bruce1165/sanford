@@ -68,6 +68,8 @@ class LaoYaTouZhouXianParams:
 
     # Signal 2 parameters (1)
     SIGNAL_2_CONFIRM_DAYS: int = 5  # Reduced from 10 to 5 days for better signal detection
+    SIGNAL_2_MIN_CONFIRM_DAYS: int = 1
+    SIGNAL_2_CROSS_LOOKBACK_DAYS: int = 60
 
     # Signal 3 parameters (1)
     SIGNAL_3_BREAKOUT_LOOKBACK: int = 110  # Changed from 22 weeks to 110 days
@@ -239,6 +241,8 @@ class LaoYaTouZhouXianScreener(BaseScreener):
             signal_1_min_gap=params.SIGNAL_1_MIN_GAP,
             signal_1_volume_ratio_min=params.SIGNAL_1_VOLUME_RATIO_MIN,
             signal_2_confirm_days=params.SIGNAL_2_CONFIRM_DAYS,  # Changed from signal_2_confirm_weeks
+            signal_2_min_confirm_days=params.SIGNAL_2_MIN_CONFIRM_DAYS,
+            signal_2_cross_lookback_days=params.SIGNAL_2_CROSS_LOOKBACK_DAYS,
             signal_3_breakout_lookback=params.SIGNAL_3_BREAKOUT_LOOKBACK
         )
 
@@ -564,6 +568,24 @@ class LaoYaTouZhouXianScreener(BaseScreener):
                 'max': 15,
                 'display_name': '信号二确认天数',
                 'description': '信号二：金叉后需要确认的天数',
+                'group': '信号二参数'
+            },
+            'SIGNAL_2_MIN_CONFIRM_DAYS': {
+                'type': 'int',
+                'default': 1,
+                'min': 0,
+                'max': 10,
+                'display_name': '信号二最小确认天数',
+                'description': '信号二：允许鸭嘴长短变化，金叉后至少需要保持多头排列的天数',
+                'group': '信号二参数'
+            },
+            'SIGNAL_2_CROSS_LOOKBACK_DAYS': {
+                'type': 'int',
+                'default': 60,
+                'min': 10,
+                'max': 180,
+                'display_name': '信号二金叉回溯天数',
+                'description': '信号二：允许鸭嘴较长，向前回溯多少天寻找金叉',
                 'group': '信号二参数'
             },
             # Signal 3 parameters (1)

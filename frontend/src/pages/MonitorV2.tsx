@@ -1,5 +1,6 @@
 // MonitorV2.tsx – NeoTrade Screener Monitor v2  (Phase 4 – Mockup aligned)
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { apiRequest } from '../api';
 
 /* ──────────────────────────────────────────
    Interfaces
@@ -30,7 +31,7 @@ interface Pick {
    Tab configuration
    Maps stage values from API → tab keys
 ────────────────────────────────────────── */
-type TabKey = 'newbie' | 'watching' | 'graduated' | 'failed';
+type TabKey = 'newbie' | 'graduated' | 'failed';
 
 const TAB_CONFIG: { key: TabKey; label: string; stages: string[]; color: string }[] = [
   { key: 'newbie',    label: 'ACTIVE',    stages: ['active'],             color: '#3b82f6' },
@@ -72,43 +73,54 @@ export default function MonitorV2({ selectedScreener: propSelectedScreener }: { 
   const [lastUpdated, setLastUpdated] = useState<string>('');
   const [localSelectedScreener, setLocalSelectedScreener] = useState<string>('');
   const [screeners, setScreeners]     = useState<{ name: string; display_name: string }[]>([]);
+  const fetchSeqRef = useRef(0);
 
   // Use local state, but sync with prop
   const selectedScreener = localSelectedScreener || propSelectedScreener || '';
 
+  const fetchScreeners = useCallback(async () => {
+    const sData = await apiRequest<{ screeners?: { name: string; display_name: string }[] }>('/monitor/screeners');
+    const fetchedScreeners: { name: string; display_name: string }[] = sData.screeners || [];
+    setScreeners(fetchedScreeners);
+    return fetchedScreeners;
+  }, []);
+
   /* ── Fetch picks ── */
   const fetchPicks = useCallback(async (currentScreener?: string) => {
+    const seq = ++fetchSeqRef.current;
     try {
+      setError(null);
       const screenerToFetch = currentScreener !== undefined ? currentScreener : selectedScreener;
-
-      // Step 1: get screener list
-      const sRes = await fetch('/api/monitor/screeners');
-      if (!sRes.ok) throw new Error(`screeners HTTP ${sRes.status}`);
-      const sData = await sRes.json();
-      const fetchedScreeners: { name: string; display_name: string }[] = sData.screeners || [];
-      setScreeners(fetchedScreeners);
-      if (fetchedScreeners.length === 0) { setLoading(false); return; }
-
-      // Step 2: aggregate picks from all screeners (or just selected one)
-      const allPicks: Pick[] = [];
-      const screenersToFetch = screenerToFetch
-        ? fetchedScreeners.filter(s => s.name === screenerToFetch)
-        : fetchedScreeners;
-
-      for (const s of screenersToFetch) {
-        const r = await fetch(`/api/monitor/pipeline?screener_id=${encodeURIComponent(s.name)}`);
-        if (!r.ok) continue;
-        const d = await r.json();
-        allPicks.push(...(d.picks || []));
+      const activeScreeners = screeners.length ? screeners : await fetchScreeners();
+      if (seq !== fetchSeqRef.current) return;
+      if (activeScreeners.length === 0) {
+        setPicks([]);
+        setLastUpdated('');
+        return;
       }
+
+      const screenersToFetch = screenerToFetch
+        ? activeScreeners.filter(s => s.name === screenerToFetch)
+        : activeScreeners;
+
+      const results = await Promise.all(
+        screenersToFetch.map((s) =>
+          apiRequest<{ picks?: Pick[] }>(`/monitor/pipeline?screener_id=${encodeURIComponent(s.name)}`)
+        )
+      );
+      if (seq !== fetchSeqRef.current) return;
+      const allPicks: Pick[] = [];
+      for (const d of results) allPicks.push(...(d.picks || []));
       setPicks(allPicks);
       setLastUpdated(new Date().toLocaleTimeString('zh-CN'));
     } catch (e) {
+      if (seq !== fetchSeqRef.current) return;
       setError(e instanceof Error ? e.message : '获取失败');
     } finally {
+      if (seq !== fetchSeqRef.current) return;
       setLoading(false);
     }
-  }, [selectedScreener]); // Include selectedScreener in deps
+  }, [selectedScreener, screeners, fetchScreeners]);
 
   // Fetch on mount and when screener changes
   useEffect(() => {
@@ -125,8 +137,7 @@ export default function MonitorV2({ selectedScreener: propSelectedScreener }: { 
   /* ── Fetch expired picks ── */
   const handleFetchExpired = async () => {
     try {
-      const res = await fetch('/api/monitor/expired', { method: 'GET' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await apiRequest('/monitor/expired', { method: 'GET' });
       await fetchPicks();
     } catch (e) {
       alert(e instanceof Error ? e.message : '操作失败');
@@ -137,7 +148,7 @@ export default function MonitorV2({ selectedScreener: propSelectedScreener }: { 
   const grouped = TAB_CONFIG.reduce<Record<TabKey, Pick[]>>((acc, tab) => {
     acc[tab.key] = picks.filter((p) => tab.stages.includes(p.status));
     return acc;
-  }, { newbie: [], watching: [], graduated: [], failed: [] } as Record<TabKey, Pick[]>);
+  }, { newbie: [], graduated: [], failed: [] } as Record<TabKey, Pick[]>);
 
   const visiblePicks = grouped[activeTab];
   const selectedPick = visiblePicks.find((p) => p.id === selectedId) ?? null;
@@ -190,9 +201,10 @@ export default function MonitorV2({ selectedScreener: propSelectedScreener }: { 
               background: '#1e2d3d',
               color: '#e5e7eb',
               border: `1px solid ${BORDER}`,
-              borderRadius: 4,
+              borderRadius: 6,
               padding: '4px 8px',
-              fontSize: 11,
+              fontSize: 12,
+              height: 30,
               outline: 'none',
               cursor: 'pointer',
             }}

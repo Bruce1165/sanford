@@ -1,0 +1,41 @@
+{
+  "metadata": {
+    "version": "v1.0",
+    "last_updated": "2026-05-02T16:20:00",
+    "updated_by": "codex",
+    "strategy_id": "turtle_short_neil"
+  },
+  "display_name": "海龟短期策略（Neil）",
+  "description": "海龟短期策略参数配置：20日突破入场、10日通道退出。",
+  "category": "策略参数",
+  "parameters": {
+    "ENTRY_N": {
+      "value": 20,
+      "display_name": "入场通道天数",
+      "description": "突破入场所使用的历史最高价窗口（不含当日）",
+      "group": "核心参数",
+      "type": "int",
+      "min": 5,
+      "max": 120,
+      "default": 20
+    },
+    "EXIT_N": {
+      "value": 10,
+      "display_name": "退出通道天数",
+      "description": "退出信号所使用的历史最低价窗口（不含当日）",
+      "group": "核心参数",
+      "type": "int",
+      "min": 2,
+      "max": 60,
+      "default": 10
+    },
+    "NEW_ENTRY_RULE": {
+      "value": "today_true_prev_false",
+      "display_name": "新入场判定规则",
+      "description": "当日入场为真且前一交易日入场为假时，判定为新入场",
+      "group": "信号口径",
+      "type": "str",
+      "default": "today_true_prev_false"
+    }
+  }
+}

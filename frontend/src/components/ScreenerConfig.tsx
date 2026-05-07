@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { Button, Input, InputNumber, Table, Typography, Tag, Alert, message, Spin } from 'antd';
-import { SaveOutlined, ReloadOutlined, WarningOutlined } from '@ant-design/icons';
+import { useState, useEffect, useImperativeHandle, forwardRef, useRef } from 'react';
+import { Input, InputNumber, Table, Typography, Alert, message, Spin } from 'antd';
+import { WarningOutlined } from '@ant-design/icons';
 import { apiRequest } from '../api/index';
 
 const { Text } = Typography;
@@ -31,6 +31,7 @@ interface ScreenerConfig {
 interface ScreenerConfigProps {
   screenerName: string;
   onClose?: () => void;
+  onUiStateChange?: (state: { unsavedChanges: boolean; saving: boolean }) => void;
 }
 
 interface ParameterRow {
@@ -48,7 +49,13 @@ interface ParameterRow {
   isModified: boolean;
 }
 
-export const ScreenerConfig: React.FC<ScreenerConfigProps> = ({ screenerName, onClose: _onClose }) => {
+export interface ScreenerConfigHandle {
+  save: () => void;
+  reset: () => void;
+}
+
+export const ScreenerConfig = forwardRef<ScreenerConfigHandle, ScreenerConfigProps>(
+({ screenerName, onClose: _onClose, onUiStateChange }, ref) => {
   const [loading, setLoading] = useState(true);
   const [config, setConfig] = useState<ScreenerConfig | null>(null);
   const [saving, setSaving] = useState(false);
@@ -56,6 +63,8 @@ export const ScreenerConfig: React.FC<ScreenerConfigProps> = ({ screenerName, on
   const [originalValues, setOriginalValues] = useState<Record<string, any>>({});
   const [parameters, setParameters] = useState<ParameterRow[]>([]);
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
+  const tableWrapRef = useRef<HTMLDivElement | null>(null);
+  const [tableBodyY, setTableBodyY] = useState(420);
 
   // Helper to get clean name (remove '_screener' suffix)
   // Keep screenerName as-is for API calls (no suffix removal needed)
@@ -63,6 +72,10 @@ export const ScreenerConfig: React.FC<ScreenerConfigProps> = ({ screenerName, on
   useEffect(() => {
     loadConfig();
   }, [screenerName]);
+
+  useEffect(() => {
+    if (onUiStateChange) onUiStateChange({ unsavedChanges, saving });
+  }, [unsavedChanges, saving, onUiStateChange]);
 
   const loadConfig = async () => {
     setLoading(true);
@@ -255,6 +268,28 @@ export const ScreenerConfig: React.FC<ScreenerConfigProps> = ({ screenerName, on
     message.info('已重置为当前保存的值');
   };
 
+  useImperativeHandle(
+    ref,
+    () => ({
+      save: () => { void handleSave(); },
+      reset: () => { handleReset(); },
+    }),
+    [handleSave, handleReset]
+  );
+
+  useEffect(() => {
+    const compute = () => {
+      if (!tableWrapRef.current) return;
+      const rect = tableWrapRef.current.getBoundingClientRect();
+      const available = Math.floor(rect.height);
+      const headerReserve = 56;
+      setTableBodyY(Math.max(220, available - headerReserve));
+    };
+    compute();
+    window.addEventListener('resize', compute);
+    return () => window.removeEventListener('resize', compute);
+  }, [unsavedChanges, loading, config]);
+
   const columns = [
     {
       title: '参数名称',
@@ -381,9 +416,11 @@ export const ScreenerConfig: React.FC<ScreenerConfigProps> = ({ screenerName, on
       title: '说明',
       dataIndex: 'description',
       key: 'description',
-      ellipsis: true,
+      width: 560,
       render: (description: string) => (
-        <Text style={{ color: '#374151', fontSize: '13px' }}>{description}</Text>
+        <Text style={{ color: '#374151', fontSize: '13px', whiteSpace: 'normal', wordBreak: 'break-word' }}>
+          {description}
+        </Text>
       )
     }
   ];
@@ -414,44 +451,10 @@ export const ScreenerConfig: React.FC<ScreenerConfigProps> = ({ screenerName, on
   }
 
   return (
-    <div style={{ background: '#ffffff' }}>
-      {/* Header */}
-      <div style={{ padding: '20px 24px', borderBottom: '2px solid #e5e7eb', background: '#f9fafb' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div>
-            <h2 style={{ color: '#111827', margin: 0, marginBottom: '8px' }}>
-              {config.display_name}
-            </h2>
-            <Text style={{ fontSize: '13px', color: '#6b7280' }}>
-              {screenerName} | 版本: {config.metadata?.version}
-            </Text>
-          </div>
-          <div style={{ display: 'flex', gap: '12px' }}>
-            <Button
-              icon={<ReloadOutlined />}
-              onClick={handleReset}
-              disabled={!unsavedChanges}
-            >
-              重置
-            </Button>
-            <Button
-              type="primary"
-              icon={<SaveOutlined />}
-              onClick={handleSave}
-              disabled={!unsavedChanges}
-              loading={saving}
-              size="large"
-              style={{ minWidth: '120px' }}
-            >
-              保存配置
-            </Button>
-          </div>
-        </div>
-      </div>
-
+    <div className="screener-config-page" style={{ background: '#ffffff', height: '100%', display: 'flex', flexDirection: 'column' }}>
       {/* Warning for unsaved changes */}
       {unsavedChanges && (
-        <div style={{ padding: '0 24px', marginTop: '16px' }}>
+        <div style={{ padding: '8px 12px', borderBottom: '1px solid #e5e7eb' }}>
           <Alert
             message="您有未保存的变更"
             description="请点击保存按钮使更改生效"
@@ -464,33 +467,19 @@ export const ScreenerConfig: React.FC<ScreenerConfigProps> = ({ screenerName, on
       )}
 
       {/* Parameters Table */}
-      <div style={{ padding: '24px' }}>
-        <div style={{ border: '1px solid #d1d5db', borderRadius: '4px', overflow: 'hidden' }}>
-          <Table
-            columns={columns}
-            dataSource={parameters}
-            pagination={false}
-            size="small"
-            scroll={{ x: 1200, y: 500 }}
-            rowKey="key"
-            bordered={true}
-            style={{ background: '#ffffff' }}
-          />
-        </div>
-      </div>
-
-      {/* Description Card */}
-      <div style={{ padding: '0 24px 24px' }}>
-        <div style={{ border: '1px solid #e5e7eb', borderRadius: '4px', padding: '20px', background: '#f9fafb' }}>
-          <h3 style={{ color: '#111827', marginBottom: '12px', fontSize: '16px' }}>筛选器说明</h3>
-          <Text style={{ color: '#374151', fontSize: '14px', lineHeight: '1.6' }}>
-            {config.description || '暂无描述'}
-          </Text>
-          <div style={{ marginTop: '12px' }}>
-            <Tag color="blue">{config.category}</Tag>
-          </div>
-        </div>
+      <div ref={tableWrapRef} style={{ flex: '1 1 auto', minHeight: 0, overflow: 'hidden' }}>
+        <Table
+          columns={columns}
+          dataSource={parameters}
+          pagination={false}
+          size="small"
+          scroll={{ x: 'max-content', y: tableBodyY }}
+          rowKey="key"
+          bordered={true}
+          tableLayout="auto"
+          style={{ background: '#ffffff' }}
+        />
       </div>
     </div>
   );
-};
+});

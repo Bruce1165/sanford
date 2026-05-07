@@ -11,6 +11,7 @@ Screener Config Loader - 筛选器配置加载模块
 import json
 import os
 import sys
+import logging
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Any
 from datetime import datetime
@@ -25,6 +26,7 @@ except ImportError:
     print("Warning: Could not import models. Database operations will be disabled.")
 
 CONFIG_DIR = BACKEND_ROOT.parent / 'config' / 'screeners'
+logger = logging.getLogger(__name__)
 
 
 class ConfigLoader:
@@ -69,62 +71,121 @@ class ConfigLoader:
         Returns:
             配置字典，如果不存在返回None
         """
+        def _normalize_schema_parameters(schema_obj: Any) -> Dict[str, Any]:
+            if not isinstance(schema_obj, dict):
+                return {}
+            params = schema_obj.get('parameters')
+            if isinstance(params, dict):
+                return params
+            return schema_obj
+
+        def _load_schema_from_file() -> Dict[str, Any]:
+            config_path = ConfigLoader.get_config_path(screener_name)
+            if not config_path.exists():
+                return {}
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    file_cfg = json.load(f)
+                file_params = file_cfg.get('parameters')
+                return file_params if isinstance(file_params, dict) else {}
+            except Exception:
+                return {}
+
         try:
             config_data = get_screener_config(screener_name)
-            print(f"[DEBUG ConfigLoader] get_screener_config returned: {config_data}")
-            print(f"[DEBUG ConfigLoader] config_data type: {type(config_data)}")
-            if config_data:
-                # Parse config_json (may already be a dict or JSON string)
-                config_json_raw = config_data['config_json']
-                if isinstance(config_json_raw, dict):
-                    config_json = config_json_raw
-                else:
-                    config_json = json.loads(config_json_raw)
-                print(f"[DEBUG ConfigLoader] Parsed config_json: {config_json}")
+            if not config_data:
+                return None
 
-                # Get schema (may already be a dict or JSON string)
-                schema_json_raw = config_data['config_schema']
-                if isinstance(schema_json_raw, dict):
-                    schema_json = schema_json_raw
-                else:
-                    schema_json = json.loads(schema_json_raw)
-                print(f"[DEBUG ConfigLoader] Parsed schema_json: {schema_json}")
-
-                # Extract schema parameters for parameter mapping
-                schema_parameters = schema_json.get('parameters', {})
-                print(f"[DEBUG ConfigLoader] Schema parameters: {list(schema_parameters.keys())}")
-
-                # Build parameters dict with schema metadata
-                parameters_with_schema = {}
-                for param_name, param_value in config_json.items():
-                    if param_name in schema_parameters:
-                        param_schema = schema_parameters[param_name]
-                        parameters_with_schema[param_name] = {
-                            'value': param_value,
-                            'display_name': param_schema.get('display_name', param_name),
-                            'description': param_schema.get('description', ''),
-                            'group': param_schema.get('group', '其他'),
-                            'type': param_schema.get('type', 'string')
-                        }
-                print(f"[DEBUG ConfigLoader] Built parameters with {len(parameters_with_schema)} items")
-
-                # 提取配置JSON和Schema
-                return {
-                    'metadata': {
-                        'version': config_data['current_version'],
-                        'last_updated': config_data['updated_at']
-                    },
-                    'display_name': config_data['display_name'],
-                    'description': config_data['description'],
-                    'category': config_data['category'],
-                    'parameters': parameters_with_schema
-                }
+            config_json_raw = config_data.get('config_json')
+            if isinstance(config_json_raw, dict):
+                config_json = config_json_raw
             else:
-                print(f"[DEBUG ConfigLoader] config_data is None, returning None")
-        except Exception as e:
-            print(f"Error loading config from database: {e}")
+                config_json = json.loads(config_json_raw or '{}')
 
-        return None
+            schema_json_raw = config_data.get('config_schema')
+            if isinstance(schema_json_raw, dict):
+                schema_json = schema_json_raw
+            else:
+                schema_json = json.loads(schema_json_raw or '{}')
+
+            schema_parameters = _normalize_schema_parameters(schema_json)
+            if not schema_parameters:
+                schema_parameters = _load_schema_from_file()
+
+            config_parameters = None
+            if isinstance(config_json, dict):
+                config_parameters = config_json.get('parameters') if isinstance(config_json.get('parameters'), dict) else None
+
+            if config_parameters is None and isinstance(config_json, dict):
+                config_parameters = config_json
+
+            parameters_with_schema: Dict[str, Any] = {}
+
+            if isinstance(schema_parameters, dict) and schema_parameters:
+                for param_name, param_schema in schema_parameters.items():
+                    base = param_schema.copy() if isinstance(param_schema, dict) else {}
+                    config_value = None
+                    if isinstance(config_parameters, dict) and param_name in config_parameters:
+                        config_value = config_parameters.get(param_name)
+
+                    if isinstance(config_value, dict):
+                        value = config_value.get('value')
+                    else:
+                        value = config_value
+
+                    if value is None:
+                        value = base.get('default')
+                        if value is None and 'value' in base:
+                            value = base.get('value')
+
+                    base['value'] = value
+                    base.setdefault('display_name', param_name)
+                    base.setdefault('description', '')
+                    base.setdefault('group', '其他')
+                    base.setdefault('type', 'string')
+                    parameters_with_schema[param_name] = base
+
+                if isinstance(config_parameters, dict):
+                    for extra_name, extra_payload in config_parameters.items():
+                        if extra_name in parameters_with_schema:
+                            continue
+                        if isinstance(extra_payload, dict) and 'value' in extra_payload:
+                            parameters_with_schema[extra_name] = extra_payload
+                        else:
+                            parameters_with_schema[extra_name] = {
+                                'value': extra_payload,
+                                'display_name': extra_name,
+                                'description': '',
+                                'group': '其他',
+                                'type': 'string',
+                            }
+            else:
+                if isinstance(config_parameters, dict):
+                    for param_name, param_payload in config_parameters.items():
+                        if isinstance(param_payload, dict) and 'value' in param_payload:
+                            parameters_with_schema[param_name] = param_payload
+                        else:
+                            parameters_with_schema[param_name] = {
+                                'value': param_payload,
+                                'display_name': param_name,
+                                'description': '',
+                                'group': '其他',
+                                'type': 'string',
+                            }
+
+            return {
+                'metadata': {
+                    'version': config_data.get('current_version'),
+                    'last_updated': config_data.get('updated_at'),
+                },
+                'display_name': config_data.get('display_name'),
+                'description': config_data.get('description'),
+                'category': config_data.get('category'),
+                'parameters': parameters_with_schema,
+            }
+        except Exception as e:
+            logger.exception("Error loading config from database for %s: %s", screener_name, e)
+            return None
 
     @staticmethod
     def load_config(screener_name: str, prefer_database: bool = True) -> Optional[Dict]:
@@ -191,27 +252,17 @@ class ConfigLoader:
         Returns:
             (是否成功, 新版本号)
         """
-        print(f"[DEBUG] ConfigLoader.save_config called for: {screener_name}")
-        print(f"[DEBUG] config keys: {list(config.keys())}")
-        print(f"[DEBUG] schema keys: {list(schema.keys())}")
-
         # 保存到数据库
         try:
-            print(f"[DEBUG] Saving to database...")
             new_version = save_screener_config(screener_name, config, schema, change_summary, changed_by)
-            print(f"[DEBUG] Database save successful, version: {new_version}")
         except Exception as e:
-            print(f"[ERROR] Error saving config to database: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception("Error saving config to database for %s: %s", screener_name, e)
             return False, ''
 
         # 保存到文件
-        print(f"[DEBUG] Saving to file...")
         file_save_success = ConfigLoader.save_to_file(screener_name, config)
-        print(f"[DEBUG] File save result: {file_save_success}")
         if not file_save_success:
-            print(f"Warning: Failed to save config to file, but database save succeeded")
+            logger.warning("Failed to save config to file for %s, but database save succeeded", screener_name)
 
         return True, new_version
 

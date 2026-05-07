@@ -107,7 +107,7 @@
       "type": "int",
       "value": 5,
       "default": 5,
-      "min": 3,
+      "min": 1,
       "max": 8,
       "description": "杯柄整理期至少维持的交易日数；过短通常表示整理不充分，假突破风险更高",
       "display_name": "杯柄最小天数",

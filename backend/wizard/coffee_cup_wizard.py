@@ -624,7 +624,7 @@ class CoffeeCupWizard:
         code: str,
         cup_edge: CupEdgeResult,
         sentiment: SentimentAnalysis,
-        capital: CapitalStructure
+        capital: CapitalStructure,
         end_date: str = None
     ) -> Dict:
         """
@@ -774,7 +774,6 @@ class CoffeeCupWizard:
             cup_edge=cup_edge,
             sentiment=sentiment,
             capital=capital,
-            stock_metadata=metadata,
             end_date=end_date
         )
 
@@ -798,7 +797,7 @@ class CoffeeCupWizard:
                 'detected': cup_edge.detected,
                 'quality': cup_edge.quality,
                 'current_price': cup_edge.current_price,
-                'handle_level': cup_edge.high_price
+                'handle_level': cup_edge.high_price,
                 'days_consolidating': cup_edge.days_consolidating
             },
             'sentiment': {
