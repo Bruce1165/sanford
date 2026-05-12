@@ -318,6 +318,52 @@ def init_db():
         )
     ''')
 
+    # ========== Cup-Handle Lab Feedback (Questionnaire v1) ==========
+    # Structured user feedback for iterative improvement. Keep it schema-stable and easy to aggregate.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS cup_handle_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            stock_code TEXT NOT NULL,
+            stock_name TEXT,
+            signal_date TEXT,
+            main_view TEXT,
+            delivery_view TEXT,
+            q1_should_enter TEXT NOT NULL,
+            q2_reasons TEXT,
+            q3_primary_risk TEXT,
+            q4_horizon TEXT,
+            q5_drawdown_tolerance TEXT,
+            extra_json TEXT
+        )
+    ''')
+
+    # ========== Cup-Handle Lab Watch Pool Events ==========
+    # Independent persistent observation pool (cross-day). One stock can enter multiple times by date/source.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS cup_watch_pool_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            stock_code TEXT NOT NULL,
+            stock_name TEXT,
+            signal_date TEXT NOT NULL,
+            source_pool TEXT NOT NULL,  -- v4 | hardened
+            run_date TEXT,
+            market_state TEXT,
+            segment_id TEXT,
+            route_cluster TEXT,
+            gate_count INTEGER,
+            dynamic_score REAL,
+            status TEXT DEFAULT 'in_progress',  -- in_progress | ready | validated
+            ready_t8 INTEGER DEFAULT 0,
+            is_success_strict INTEGER,
+            end_return_t8 REAL,
+            drawdown_mag_t1_t8 REAL,
+            UNIQUE(stock_code, signal_date, source_pool)
+        )
+    ''')
+
     # Create indexes for performance
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_screener_runs_lookup ON screener_runs(screener_name, run_date)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_screener_results_run_id ON screener_results(run_id)')
@@ -341,6 +387,13 @@ def init_db():
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_assistant_rule_runs_trade_date ON assistant_rule_runs(trade_date)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_assistant_feedback_created_at ON assistant_feedback(created_at)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_assistant_feedback_run_id ON assistant_feedback(run_id)')
+
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_cup_handle_feedback_created_at ON cup_handle_feedback(created_at)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_cup_handle_feedback_stock_code ON cup_handle_feedback(stock_code)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_cup_watch_pool_signal_date ON cup_watch_pool_events(signal_date)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_cup_watch_pool_source_pool ON cup_watch_pool_events(source_pool)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_cup_watch_pool_status ON cup_watch_pool_events(status)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_cup_watch_pool_created_at ON cup_watch_pool_events(created_at)')
 
     conn.commit()
     conn.close()

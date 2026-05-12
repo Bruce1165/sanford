@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { api, type StrategyId, type StrategyTaskType } from '../api';
+import { api, type StrategyId, type StrategyLabRecentSignalsSummaryResponse, type StrategyTaskType } from '../api';
 import { CalendarWithButton } from '../components/Calendar';
 
 const statusColor = (status: string): string => {
@@ -41,6 +41,21 @@ const executeModeLabel = (executeMode: string): string => {
   if (m === 'execute') return '执行入库';
   if (m === 'dry_run') return '试运行';
   return executeMode || '-';
+};
+
+const fmtNumber = (v: any, digits = 2): string => {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return '-';
+  return v.toFixed(digits);
+};
+
+const fmtInt = (v: any): string => {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return '-';
+  return String(Math.trunc(v));
+};
+
+const pct = (v: number | null | undefined): string => {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return '-';
+  return `${(v * 100).toFixed(2)}%`;
 };
 
 interface StrategyRunsViewProps {
@@ -143,6 +158,9 @@ export default function StrategyRunsView({ theme = 'dark', initialStrategyId, em
   const [limit, setLimit] = useState(20);
   const [offset, setOffset] = useState(0);
   const [total, setTotal] = useState(0);
+  const [recentSummary, setRecentSummary] = useState<StrategyLabRecentSignalsSummaryResponse | null>(null);
+  const [recentSummaryLoading, setRecentSummaryLoading] = useState(false);
+  const [recentSummaryError, setRecentSummaryError] = useState('');
 
   useEffect(() => {
     if (!initialStrategyId) return;
@@ -165,6 +183,8 @@ export default function StrategyRunsView({ theme = 'dark', initialStrategyId, em
   const hitCandidates = Array.isArray(summaryObj?.candidates) ? summaryObj.candidates : [];
   const hitSamples = Array.isArray(summaryObj?.sample) ? summaryObj.sample : [];
   const hitList = hitCandidates.length ? hitCandidates : hitSamples;
+  const isSelectedDaily = String(selectedRun?.task_type || '').toLowerCase() === 'daily';
+  const hasRsi = hitCandidates.some((x: any) => typeof x?.rsi14 === 'number' && Number.isFinite(x.rsi14));
 
   const copyText = async (text: string, okMessage: string) => {
     try {
@@ -202,8 +222,15 @@ export default function StrategyRunsView({ theme = 'dark', initialStrategyId, em
         limit,
         offset: effectiveOffset,
       });
-      setRuns(Array.isArray(data?.items) ? data.items : []);
+      const nextRuns = Array.isArray(data?.items) ? data.items : [];
+      setRuns(nextRuns);
       setTotal(Number(data?.total || 0));
+      const selectedId = String(selectedRun?.run_id || '');
+      const selectedStillInList = !!selectedId && nextRuns.some((r) => String(r?.run_id || '') === selectedId);
+      if (!selectedStillInList && nextRuns.length > 0) {
+        const firstRunId = String(nextRuns[0]?.run_id || '');
+        if (firstRunId) void loadRunDetail(firstRunId);
+      }
     } catch (err: any) {
       setErrorText(err?.message || '加载任务列表失败');
     } finally {
@@ -211,10 +238,29 @@ export default function StrategyRunsView({ theme = 'dark', initialStrategyId, em
     }
   };
 
+  const loadRecentSummary = async () => {
+    setRecentSummaryLoading(true);
+    setRecentSummaryError('');
+    try {
+      const data = await api.getStrategyLabRecentSignalsSummary({ strategy_id: strategyId, days: 5, per_day_limit: 200 });
+      setRecentSummary(data);
+    } catch (err: any) {
+      setRecentSummary(null);
+      setRecentSummaryError(err?.message || '加载最近5日汇总失败');
+    } finally {
+      setRecentSummaryLoading(false);
+    }
+  };
+
   useEffect(() => {
     void loadRuns();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [strategyId, filterTaskType, filterStatus, limit, offset]);
+
+  useEffect(() => {
+    void loadRecentSummary();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [strategyId]);
 
   useEffect(() => {
     setSelectedRun(null);
@@ -225,6 +271,24 @@ export default function StrategyRunsView({ theme = 'dark', initialStrategyId, em
     void loadRuns({ offset: 0 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [strategyId]);
+
+  useEffect(() => {
+    if (listLoading) return;
+    if (!runs.length) {
+      if (selectedRun) {
+        setSelectedRun(null);
+        setLogLines([]);
+      }
+      return;
+    }
+    const selectedId = String(selectedRun?.run_id || '');
+    const selectedStillInList = !!selectedId && runs.some((r) => String(r?.run_id || '') === selectedId);
+    if (selectedStillInList) return;
+    const firstRunId = String(runs[0]?.run_id || '');
+    if (!firstRunId) return;
+    void loadRunDetail(firstRunId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runs, listLoading, selectedRun?.run_id]);
 
   const createRun = async () => {
     setSubmitting(true);
@@ -467,6 +531,79 @@ export default function StrategyRunsView({ theme = 'dark', initialStrategyId, em
           </button>
           <span style={{ color: colors.textSecondary, fontSize: 12 }}>总数：{total}，当前偏移：{offset}</span>
         </div>
+
+        <div style={{ border: `1px solid ${colors.panelBorder}`, borderRadius: 8, padding: 10, background: colors.panelSubBg, marginBottom: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginBottom: 6 }}>
+            <div style={{ color: colors.textPrimary, fontSize: 12, fontWeight: 800 }}>
+              最近5日筛选汇总
+              <span style={{ color: colors.textSecondary, fontWeight: 700 }}>
+                {recentSummary?.meta?.latest_close_date ? `（涨跌幅截至 ${recentSummary.meta.latest_close_date}）` : ''}
+              </span>
+            </div>
+            <button
+              onClick={() => void loadRecentSummary()}
+              disabled={recentSummaryLoading}
+              style={{ ...buttonBase, padding: '2px 8px', fontSize: 11, ...(recentSummaryLoading ? buttonDisabled : null) }}
+            >
+              {recentSummaryLoading ? '刷新中...' : '刷新'}
+            </button>
+          </div>
+          {recentSummaryError && (
+            <div style={{ color: colors.danger, fontSize: 12, whiteSpace: 'pre-wrap', marginBottom: 6 }}>{recentSummaryError}</div>
+          )}
+          {!recentSummaryLoading && (!recentSummary?.items || !recentSummary.items.length) ? (
+            <div style={{ color: colors.textSecondary, fontSize: 12 }}>暂无数据（最近5个交易日无 daily 信号）</div>
+          ) : (
+            <div style={{ display: 'grid', gap: 6 }}>
+              {(recentSummary?.items || []).map((d) => {
+                const stocks = (d.stocks || []).slice().sort((a, b) => {
+                  const av = typeof a.return_pct === 'number' && Number.isFinite(a.return_pct) ? a.return_pct : -999;
+                  const bv = typeof b.return_pct === 'number' && Number.isFinite(b.return_pct) ? b.return_pct : -999;
+                  return bv - av;
+                });
+                return (
+                  <details key={d.trade_date} style={{ border: `1px solid ${colors.panelBorder}`, borderRadius: 8, padding: 8, background: isLight ? '#ffffff' : '#050d1a' }}>
+                    <summary style={{ cursor: 'pointer', color: colors.textPrimary, fontSize: 12, fontWeight: 800 }}>
+                      {d.trade_date} · 命中 {d.count} · 平均 {pct(d.avg_return_pct)} · ↑{d.up_n} ↓{d.down_n} ={d.flat_n}
+                    </summary>
+                    <div style={{ marginTop: 8, overflow: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead>
+                          <tr style={{ background: colors.tableHeaderBg, color: colors.tableHeaderText }}>
+                            <th style={{ textAlign: 'left', padding: 6 }}>代码</th>
+                            <th style={{ textAlign: 'left', padding: 6 }}>名称</th>
+                            <th style={{ textAlign: 'right', padding: 6 }}>筛选日收盘</th>
+                            <th style={{ textAlign: 'right', padding: 6 }}>最新收盘</th>
+                            <th style={{ textAlign: 'right', padding: 6 }}>涨跌幅</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {stocks.map((s, idx) => {
+                            const r = typeof s.return_pct === 'number' && Number.isFinite(s.return_pct) ? s.return_pct : null;
+                            const color = r == null ? colors.textSecondary : (r >= 0 ? '#22c55e' : '#ef4444');
+                            return (
+                              <tr key={`${d.trade_date}-${s.stock_code}-${idx}`} style={{ borderTop: `1px solid ${colors.panelBorder}` }}>
+                                <td style={{ padding: 6, fontFamily: 'monospace' }}>{s.stock_code}</td>
+                                <td style={{ padding: 6 }}>{s.stock_name || '-'}</td>
+                                <td style={{ padding: 6, textAlign: 'right' }}>{fmtNumber(s.entry_close, 2)}</td>
+                                <td style={{ padding: 6, textAlign: 'right' }}>{fmtNumber(s.latest_close, 2)}</td>
+                                <td style={{ padding: 6, textAlign: 'right', color, fontWeight: 800 }}>{pct(r)}</td>
+                              </tr>
+                            );
+                          })}
+                          {!stocks.length && (
+                            <tr><td style={{ padding: 6, color: colors.textSecondary }} colSpan={5}>当日无信号</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, height: '100%' }}>
           <div style={{ border: `1px solid ${colors.panelBorder}`, borderRadius: 6, overflow: 'auto', height: '100%' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -476,6 +613,7 @@ export default function StrategyRunsView({ theme = 'dark', initialStrategyId, em
                   <th style={{ textAlign: 'left', padding: 6 }}>执行</th>
                   <th style={{ textAlign: 'left', padding: 6 }}>状态</th>
                   <th style={{ textAlign: 'left', padding: 6 }}>类型</th>
+                  <th style={{ textAlign: 'right', padding: 6 }}>命中/信号</th>
                 </tr>
               </thead>
               <tbody>
@@ -520,6 +658,15 @@ export default function StrategyRunsView({ theme = 'dark', initialStrategyId, em
                       </span>
                     </td>
                     <td style={{ padding: 6 }}>{taskLabel(String(r.task_type || ''))}</td>
+                    <td style={{ padding: 6, textAlign: 'right', color: colors.textSecondary, fontWeight: 800 }}>
+                      {(() => {
+                        const s = r?.summary && typeof r.summary === 'object' ? r.summary : {};
+                        const t = String(r?.task_type || '').toLowerCase();
+                        if (t === 'daily') return String(s?.new_entry_count ?? '-');
+                        if (t === 'backfill') return String(s?.total_entry_signals ?? '-');
+                        return '-';
+                      })()}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -594,6 +741,70 @@ export default function StrategyRunsView({ theme = 'dark', initialStrategyId, em
                     </div>
                   ) : (
                     <div style={{ color: colors.textSecondary }}>暂无命中股票</div>
+                  )}
+                </div>
+                <div style={{ border: `1px solid ${colors.panelBorder}`, borderRadius: 6, padding: 8, background: colors.panelSubBg, color: colors.textPrimary, fontSize: 12, marginBottom: 8 }}>
+                  <div style={{ fontWeight: 800, marginBottom: 6 }}>仿真/回测（任务输出明细）</div>
+                  {isSelectedDaily ? (
+                    hitCandidates.length ? (
+                      <div style={{ overflow: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                          <thead>
+                            <tr style={{ background: colors.tableHeaderBg, color: colors.tableHeaderText }}>
+                              <th style={{ textAlign: 'left', padding: 6 }}>代码</th>
+                              <th style={{ textAlign: 'left', padding: 6 }}>名称</th>
+                              <th style={{ textAlign: 'left', padding: 6 }}>日期</th>
+                              <th style={{ textAlign: 'right', padding: 6 }}>收盘价</th>
+                              <th style={{ textAlign: 'right', padding: 6 }}>入场位</th>
+                              {hasRsi && <th style={{ textAlign: 'right', padding: 6 }}>RSI14</th>}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {hitCandidates.map((it: any, idx: number) => (
+                              <tr key={`${it.stock_code || it.code || idx}-${idx}`} style={{ borderTop: `1px solid ${colors.panelBorder}` }}>
+                                <td style={{ padding: 6, fontFamily: 'monospace' }}>{String(it.stock_code || it.code || '-')}</td>
+                                <td style={{ padding: 6 }}>{String(it.stock_name || it.name || '-')}</td>
+                                <td style={{ padding: 6, color: colors.textSecondary }}>{String(it.trade_date || it.first_date || '-')}</td>
+                                <td style={{ padding: 6, textAlign: 'right' }}>{fmtNumber(it.close_price, 2)}</td>
+                                <td style={{ padding: 6, textAlign: 'right' }}>{fmtNumber(it.entry_price, 2)}</td>
+                                {hasRsi && <td style={{ padding: 6, textAlign: 'right' }}>{fmtNumber(it.rsi14, 2)}</td>}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div style={{ color: colors.textSecondary }}>当日无新触发（candidates 为空）</div>
+                    )
+                  ) : (
+                    hitSamples.length ? (
+                      <div style={{ overflow: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                          <thead>
+                            <tr style={{ background: colors.tableHeaderBg, color: colors.tableHeaderText }}>
+                              <th style={{ textAlign: 'left', padding: 6 }}>代码</th>
+                              <th style={{ textAlign: 'left', padding: 6 }}>名称</th>
+                              <th style={{ textAlign: 'right', padding: 6 }}>入场信号数</th>
+                              <th style={{ textAlign: 'left', padding: 6 }}>首次</th>
+                              <th style={{ textAlign: 'left', padding: 6 }}>最近</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {hitSamples.map((it: any, idx: number) => (
+                              <tr key={`${it.stock_code || it.code || idx}-${idx}`} style={{ borderTop: `1px solid ${colors.panelBorder}` }}>
+                                <td style={{ padding: 6, fontFamily: 'monospace' }}>{String(it.stock_code || it.code || '-')}</td>
+                                <td style={{ padding: 6 }}>{String(it.stock_name || it.name || '-')}</td>
+                                <td style={{ padding: 6, textAlign: 'right' }}>{fmtInt(it.entry_signals)}</td>
+                                <td style={{ padding: 6, color: colors.textSecondary }}>{String(it.first_date || '-')}</td>
+                                <td style={{ padding: 6, color: colors.textSecondary }}>{String(it.last_date || '-')}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div style={{ color: colors.textSecondary }}>回溯样本为空（sample 为空）</div>
+                    )
                   )}
                 </div>
                 <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>

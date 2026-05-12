@@ -183,6 +183,88 @@ export interface CupHandleLabV4PoolCompareResponse {
   warnings: string[];
 }
 
+export interface CupHandleLabFeedbackItem {
+  id: number;
+  created_at: string;
+  stock_code: string;
+  stock_name: string;
+  signal_date: string;
+  main_view: string;
+  delivery_view: string;
+  q1_should_enter: 'should' | 'should_not' | 'unsure' | string;
+  q2_reasons: string[];
+  q3_primary_risk: 'shape' | 'volume' | 'market' | 'sector' | 'risk_reward' | string;
+  q4_horizon: 't5' | 't8' | 't13' | string;
+  q5_drawdown_tolerance: 'low' | 'mid' | 'high' | string;
+}
+
+export interface CupHandleLabFeedbackListResponse {
+  items: CupHandleLabFeedbackItem[];
+  limit: number;
+  offset: number;
+}
+
+export interface CupHandleLabFeedbackSubmitRequest {
+  stock_code: string;
+  stock_name?: string;
+  signal_date?: string;
+  main_view?: 'delivery' | 'replay' | string;
+  delivery_view?: 'hardened' | 'v4' | string;
+  q1_should_enter: 'should' | 'should_not' | 'unsure';
+  q2_reasons?: string[];
+  q3_primary_risk?: 'shape' | 'volume' | 'market' | 'sector' | 'risk_reward';
+  q4_horizon?: 't5' | 't8' | 't13';
+  q5_drawdown_tolerance?: 'low' | 'mid' | 'high';
+}
+
+export interface CupHandleLabFeedbackSubmitResponse {
+  ok: boolean;
+  feedback_id?: number;
+}
+
+export interface CupHandleLabDailyBriefResponse {
+  meta: {
+    target_date: string;
+    prev_date: string | null;
+    available_dates: string[];
+    latest_updated_at?: string | null;
+  };
+  daily_action: {
+    observe_pool_n: number;
+    new_watch_n: number;
+    feedback_processed_n: number;
+  };
+  forward_summary: {
+    t8_success_rate: number;
+    t8_success_rate_prev: number;
+    t8_success_trend: '升' | '降' | '震荡' | string;
+    avg_return_t8: number | null;
+    avg_drawdown_t1_t8: number | null;
+    validated_sample_n: number;
+  };
+  reverse_findings: {
+    top_risks: Array<{ risk: string; count: number }>;
+  };
+  model_iteration: {
+    param_update_n: number | null;
+    entry_improve_pct: number | null;
+    note?: string;
+  };
+  strategy_audit?: {
+    run_date?: string | null;
+    decision: 'keep' | 'observe' | 'rollback' | string;
+    decision_reason?: string;
+    delta_success_rate_pp?: number | null;
+    drawdown_delta_pp?: number | null;
+    ready_n?: number | null;
+    min_ready_n?: number;
+    baseline_version?: string;
+    candidate_version?: string;
+    drawdown_threshold_pp?: number | null;
+    drawdown_gate_status?: 'pending_data' | 'pass' | 'fail' | string;
+  };
+}
+
 export interface CheckResult {
   match: boolean;
   code: string;
@@ -501,6 +583,32 @@ export interface StrategyRunLogsResponse {
   lines: string[];
 }
 
+export interface StrategyLabRecentSignalsSummaryResponse {
+  meta: {
+    strategy_id: StrategyId;
+    days: number;
+    per_day_limit: number;
+    latest_close_date: string | null;
+  };
+  items: Array<{
+    trade_date: string;
+    count: number;
+    up_n: number;
+    down_n: number;
+    flat_n: number;
+    avg_return_pct: number | null;
+    stocks: Array<{
+      stock_code: string;
+      stock_name: string;
+      entry_trade_date: string;
+      entry_close: number | null;
+      latest_trade_date?: string | null;
+      latest_close?: number | null;
+      return_pct?: number | null;
+    }>;
+  }>;
+}
+
 export interface CupHandleLabSummaryResponse {
   meta: {
     latest_snapshot_detected_at: string | null;
@@ -648,6 +756,42 @@ export interface CupHandleLabStocksResponse {
     avg_dynamic_score: number;
     estimated_win_rate: number;
   }>;
+}
+
+export interface CupHandleLabWatchPoolItem {
+  id: number;
+  created_at: string;
+  updated_at: string;
+  stock_code: string;
+  stock_name: string;
+  signal_date: string;
+  source_pool: 'v4' | 'hardened' | string;
+  run_date?: string;
+  market_state?: string;
+  segment_id?: string;
+  route_cluster?: string;
+  gate_count?: number;
+  dynamic_score?: number;
+  status: 'in_progress' | 'ready' | 'validated' | string;
+  ready_t8?: number;
+  is_success_strict?: number | null;
+  end_return_t8?: number | null;
+  drawdown_mag_t1_t8?: number | null;
+}
+
+export interface CupHandleLabWatchPoolResponse {
+  items: CupHandleLabWatchPoolItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  meta: {
+    latest_signal_date: string | null;
+    available_signal_dates: string[];
+    requested_signal_date?: string | null;
+    source_pool?: string | null;
+    status?: string | null;
+    window_mode?: string;
+  };
 }
 
 // API 配置：开发时走 Vite proxy（/api → localhost:5003），生产时走同域
@@ -935,6 +1079,15 @@ export const api = {
     return apiRequest<StrategyRunLogsResponse>(`/strategy-runs/${encodeURIComponent(runId)}/logs${qs ? `?${qs}` : ''}`);
   },
 
+  /** 交易策略实验室：最近N个交易日的 daily 信号汇总 + 当前涨跌幅 */
+  getStrategyLabRecentSignalsSummary: (params: { strategy_id: StrategyId; days?: number; per_day_limit?: number }) => {
+    const q = new URLSearchParams();
+    q.set('strategy_id', params.strategy_id);
+    if (typeof params.days === 'number') q.set('days', String(params.days));
+    if (typeof params.per_day_limit === 'number') q.set('per_day_limit', String(params.per_day_limit));
+    return apiRequest<StrategyLabRecentSignalsSummaryResponse>(`/strategy-lab/recent-signals-summary?${q.toString()}`);
+  },
+
   getCupHandleLabSummary: () =>
     apiRequest<CupHandleLabSummaryResponse>('/cup-handle-lab/summary'),
 
@@ -960,6 +1113,15 @@ export const api = {
     if (params?.theme_mode) q.set('theme_mode', params.theme_mode);
     return apiRequest<CupHandleLabStocksResponse>(`/cup-handle-lab/stocks?${q.toString()}`);
   },
+  getCupHandleLabWatchPool: (params?: { limit?: number; offset?: number; signal_date?: string; source_pool?: 'v4' | 'hardened'; status?: 'in_progress' | 'ready' | 'validated' }) => {
+    const q = new URLSearchParams();
+    q.set('limit', String(params?.limit ?? 240));
+    if (typeof params?.offset === 'number') q.set('offset', String(params.offset));
+    if (params?.signal_date) q.set('signal_date', params.signal_date);
+    if (params?.source_pool) q.set('source_pool', params.source_pool);
+    if (params?.status) q.set('status', params.status);
+    return apiRequest<CupHandleLabWatchPoolResponse>(`/cup-handle-lab/watch-pool?${q.toString()}`);
+  },
   getCupHandleLabAlignment: (params?: { date?: string }) => {
     const q = new URLSearchParams();
     if (params?.date) q.set('date', params.date);
@@ -975,6 +1137,28 @@ export const api = {
     const query = q.toString();
     return apiRequest<CupHandleLabV4PoolCompareResponse>(`/cup-handle-lab/v4-pool-compare${query ? `?${query}` : ''}`);
   },
+
+  getCupHandleLabDailyBrief: (params?: { date?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.date) q.set('date', params.date);
+    const query = q.toString();
+    return apiRequest<CupHandleLabDailyBriefResponse>(`/cup-handle-lab/daily-brief${query ? `?${query}` : ''}`);
+  },
+
+  getCupHandleLabFeedback: (params?: { stock_code?: string; limit?: number; offset?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.stock_code) q.set('stock_code', params.stock_code);
+    if (typeof params?.limit === 'number') q.set('limit', String(params.limit));
+    if (typeof params?.offset === 'number') q.set('offset', String(params.offset));
+    const query = q.toString();
+    return apiRequest<CupHandleLabFeedbackListResponse>(`/cup-handle-lab/feedback${query ? `?${query}` : ''}`);
+  },
+
+  submitCupHandleLabFeedback: (payload: CupHandleLabFeedbackSubmitRequest) =>
+    apiRequest<CupHandleLabFeedbackSubmitResponse>('/cup-handle-lab/feedback', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 
   /**
    * 健康检查（无需 Auth，后端有豁免）

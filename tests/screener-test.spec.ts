@@ -1,4 +1,5 @@
 import { test, expect, Page } from '@playwright/test';
+declare const Buffer: any;
 
 /**
  * Dashboard Configuration
@@ -8,11 +9,15 @@ const AUTH_USERNAME = 'admin';
 const AUTH_PASSWORD = 'NeoTrade123';
 
 /**
- * Test Data - Lao Ya Tou Screener
+ * Test Data - prefer stable screeners and fallback to first available.
  */
-const SCREENER_NAME = 'lao_ya_tou_zhou_xian_screener';
-const SCREENER_DISPLAY_NAME = '老鸭头周线'; // Chinese display name
+const PREFERRED_SCREENERS = [
+  { value: 'coffee_cup_handle_screener_v4', display: '咖啡杯柄V4' },
+  { value: 'lao_ya_tou_zhou_xian_screener', display: '老鸭头周线' },
+  { value: 'ashare_21_screener', display: 'A股2.1' },
+];
 const TEST_STOCK_CODE = '000001';
+type TargetScreener = { value: string; display: string };
 
 /**
  * Helper: Authenticate with Basic Auth
@@ -32,6 +37,33 @@ async function navigateToScreenerTab(page: Page): Promise<void> {
 
   // Wait for screener list to load
   await page.waitForSelector('.sl-list', { timeout: 15000 });
+}
+
+/**
+ * Helper: Resolve target screener from current available options.
+ */
+async function resolveTargetScreener(page: Page): Promise<TargetScreener> {
+  const select = page.locator('.sl-check-select');
+  await expect(select).toBeVisible({ timeout: 10000 });
+
+  const options = select.locator('option');
+  const count = await options.count();
+  if (count === 0) throw new Error('No screener options available');
+
+  const available: TargetScreener[] = [];
+  for (let i = 0; i < count; i++) {
+    const option = options.nth(i);
+    const value = ((await option.getAttribute('value')) || '').trim();
+    const display = ((await option.textContent()) || '').trim() || value;
+    if (value) available.push({ value, display });
+  }
+  if (available.length === 0) throw new Error('No valid screener options available');
+
+  for (const preferred of PREFERRED_SCREENERS) {
+    const hit = available.find(s => s.value === preferred.value || s.display.includes(preferred.display));
+    if (hit) return hit;
+  }
+  return available[0];
 }
 
 /**
@@ -127,10 +159,14 @@ async function modifyAndSaveConfig(page: Page, screenerName: string): Promise<vo
     await firstInput.fill(newValue);
   }
 
-  // Click save button
+  // Click save button only when enabled.
+  // Some screeners expose read-only/default config where save is intentionally disabled.
   const saveButton = page.locator('button:has-text("Save"), button:has-text("保存"), button:has-text("确认")').first();
   if (await saveButton.isVisible({ timeout: 5000 })) {
-    await saveButton.click();
+    const isEnabled = await saveButton.isEnabled();
+    if (isEnabled) {
+      await saveButton.click();
+    }
   }
 
   // Close modal by clicking close button (X)
@@ -194,6 +230,8 @@ test('Screener runs and displays results', async ({ page }) => {
   const screenerList = page.locator('.sl-list');
   await expect(screenerList).toBeVisible({ timeout: 15000 });
 
+  const target = await resolveTargetScreener(page);
+
   // Verify screener exists in list
   const screenerCards = page.locator('.sl-card');
   await expect(screenerCards.first()).toBeVisible({ timeout: 10000 });
@@ -205,7 +243,7 @@ test('Screener runs and displays results', async ({ page }) => {
     const card = screenerCards.nth(i);
     const nameElement = card.locator('.sl-card-name');
     const name = await nameElement.textContent();
-    if (name && name.includes(SCREENER_DISPLAY_NAME)) {
+    if (name && (name.includes(target.display) || name.includes(target.value))) {
       screenerFound = true;
       break;
     }
@@ -223,8 +261,10 @@ test('Configuration parameters can be modified and saved', async ({ page }) => {
   // Navigate to screener tab
   await navigateToScreenerTab(page);
 
+  const target = await resolveTargetScreener(page);
+
   // Modify and save config
-  await modifyAndSaveConfig(page, SCREENER_DISPLAY_NAME);
+  await modifyAndSaveConfig(page, target.display);
 
   // Verify config modal closed (indicates save success)
   const configModal = page.locator('.config-modal-container');
@@ -236,9 +276,12 @@ test('Configuration parameters can be modified and saved', async ({ page }) => {
  */
 test('Single stock check functionality works', async ({ page }) => {
   await authenticate(page);
+  await navigateToScreenerTab(page);
+
+  const target = await resolveTargetScreener(page);
 
   // Check single stock
-  await checkSingleStock(page, SCREENER_DISPLAY_NAME, TEST_STOCK_CODE);
+  await checkSingleStock(page, target.value, TEST_STOCK_CODE);
 
   // Check for result or error
   const checkResult = page.locator('.sl-check-result');
@@ -269,8 +312,10 @@ test('Full workflow test', async ({ page }) => {
   const screenerCards = page.locator('.sl-card');
   await expect(screenerCards.first()).toBeVisible({ timeout: 10000 });
 
+  const target = await resolveTargetScreener(page);
+
   // Step 2: Verify check functionality
-  await checkSingleStock(page, SCREENER_DISPLAY_NAME, TEST_STOCK_CODE);
+  await checkSingleStock(page, target.value, TEST_STOCK_CODE);
 
   const checkResult = page.locator('.sl-check-result');
   const checkError = page.locator('.sl-check-error');

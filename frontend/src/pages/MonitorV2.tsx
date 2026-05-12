@@ -117,8 +117,9 @@ export default function MonitorV2({ selectedScreener: propSelectedScreener }: { 
       if (seq !== fetchSeqRef.current) return;
       setError(e instanceof Error ? e.message : '获取失败');
     } finally {
-      if (seq !== fetchSeqRef.current) return;
-      setLoading(false);
+      if (seq === fetchSeqRef.current) {
+        setLoading(false);
+      }
     }
   }, [selectedScreener, screeners, fetchScreeners]);
 

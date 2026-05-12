@@ -9,10 +9,12 @@ import math
 import re
 import uuid
 import csv
+import glob
 import sqlite3
 import gzip
 import mimetypes
 import subprocess
+import shlex
 import threading
 import time
 import smtplib
@@ -24,7 +26,7 @@ from datetime import datetime, date, timedelta
 from functools import wraps
 from email.message import EmailMessage
 
-from flask import Flask, jsonify, request, send_from_directory, send_file, Response
+from flask import Flask, jsonify, request, send_from_directory, send_file, Response, Blueprint
 from flask_compress import Compress
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -52,7 +54,14 @@ from validators import validate_screener_config, validate_screener_config_update
 # Import excel upload handler
 from excel_upload import handle_excel_upload, handle_lao_ya_tou_pool_upload
 
-from assistant_learning import assistant_learning_bp, save_rule_run
+try:
+    from assistant_learning import assistant_learning_bp, save_rule_run
+except Exception:
+    # Keep dashboard available even when assistant_learning module is absent.
+    assistant_learning_bp = Blueprint('assistant_learning_missing', __name__)
+
+    def save_rule_run(*args, **kwargs):
+        raise RuntimeError('assistant_learning module not available')
 
 # Import screeners module
 import importlib.util
@@ -485,6 +494,7 @@ CORS_ORIGINS = [
     'http://127.0.0.1:3000',
     'https://neotrade.vip.cpolar.cn',
     'https://neotrade.cpolar.cn',
+    'https://sanford.vip.cpolar.cn',
     'https://neiltrade.cloud',
 ]
 CORS(app, origins=CORS_ORIGINS, supports_credentials=True,
@@ -497,7 +507,7 @@ app.register_blueprint(assistant_learning_bp)
 @app.before_request
 def before_request():
     # Health check不需要认证
-    if request.path == '/api/health':
+    if request.path in ('/api/health', '/health'):
         return None
 
     forwarded_for = request.headers.get('X-Forwarded-For')
@@ -589,6 +599,7 @@ def catch_all(path):
 
 # API Routes
 @app.route('/api/health')
+@app.route('/health')
 def health():
     return jsonify({'status': 'ok', 'timestamp': datetime.now().isoformat()})
 
@@ -1971,6 +1982,153 @@ def _v4_lab_to_float(value, default=0.0):
         return float(default)
 
 
+def _strategy_lab_latest_closes(conn: sqlite3.Connection, stock_codes: list[str]) -> dict[str, dict]:
+    codes = [str(c).strip() for c in (stock_codes or []) if str(c).strip()]
+    if not codes:
+        return {}
+    placeholders = ",".join("?" for _ in codes)
+    sql = f"""
+        SELECT dp.code, dp.trade_date, dp.close
+        FROM daily_prices dp
+        JOIN (
+            SELECT code, MAX(trade_date) AS trade_date
+            FROM daily_prices
+            WHERE code IN ({placeholders})
+            GROUP BY code
+        ) m ON m.code = dp.code AND m.trade_date = dp.trade_date
+    """
+    rows = conn.execute(sql, codes).fetchall()
+    out: dict[str, dict] = {}
+    for r in rows or []:
+        if isinstance(r, dict):
+            code = str(r.get("code") or "")
+            out[code] = {"trade_date": str(r.get("trade_date") or "")[:10], "close": r.get("close")}
+        else:
+            code = str(r[0] or "")
+            out[code] = {"trade_date": str(r[1] or "")[:10], "close": r[2]}
+    return out
+
+
+def _strategy_lab_percent_change(entry_close: object, latest_close: object):
+    try:
+        a = float(entry_close)
+        b = float(latest_close)
+        if not math.isfinite(a) or not math.isfinite(b) or a <= 0:
+            return None
+        return (b - a) / a
+    except Exception:
+        return None
+
+
+@app.route('/api/strategy-lab/recent-signals-summary', methods=['GET'])
+def strategy_lab_recent_signals_summary():
+    """Recent N trade-days daily signals summary for strategy lab (triple_screen / neil_turtle_short)."""
+    strategy_id = str(request.args.get('strategy_id') or '').strip().lower()
+    days = _safe_int_arg('days', 5, min_value=1, max_value=30)
+    per_day_limit = _safe_int_arg('per_day_limit', 200, min_value=10, max_value=800)
+
+    if strategy_id not in ALLOWED_STRATEGY_IDS:
+        return jsonify({'error': f'invalid strategy_id: {strategy_id}'}), 400
+
+    if strategy_id == 'triple_screen':
+        table = 'triple_screen_signals'
+    else:
+        table = 'neil_turtle_signals'
+
+    conn = get_stock_db_connection()
+    try:
+        cur = conn.cursor()
+        trade_dates = [
+            str(r[0])[:10]
+            for r in cur.execute(
+                f"SELECT DISTINCT trade_date FROM {table} WHERE task_type='daily' ORDER BY trade_date DESC LIMIT ?",
+                (days,),
+            ).fetchall()
+            if r and r[0]
+        ]
+        items = []
+        latest_close_date = None
+
+        for td in trade_dates:
+            rows = cur.execute(
+                f"""
+                SELECT stock_code, stock_name, close_price
+                FROM {table}
+                WHERE task_type='daily' AND trade_date = ?
+                ORDER BY stock_code ASC
+                LIMIT ?
+                """,
+                (td, per_day_limit),
+            ).fetchall()
+            stocks = []
+            codes = []
+            for r in rows or []:
+                code = str(r[0] or '').strip()
+                if not code:
+                    continue
+                codes.append(code)
+                stocks.append(
+                    {
+                        "stock_code": code,
+                        "stock_name": str(r[1] or '').strip() or code,
+                        "entry_close": r[2],
+                        "entry_trade_date": td,
+                    }
+                )
+
+            latest_map = _strategy_lab_latest_closes(conn, codes)
+            ups = 0
+            downs = 0
+            flats = 0
+            return_values = []
+            for s in stocks:
+                latest = latest_map.get(s["stock_code"]) or {}
+                latest_close = latest.get("close")
+                ret = _strategy_lab_percent_change(s.get("entry_close"), latest_close)
+                s["latest_close"] = latest_close
+                s["latest_trade_date"] = latest.get("trade_date")
+                s["return_pct"] = ret
+                if latest.get("trade_date"):
+                    latest_close_date = latest.get("trade_date")
+                if isinstance(ret, float):
+                    return_values.append(ret)
+                    if ret > 0:
+                        ups += 1
+                    elif ret < 0:
+                        downs += 1
+                    else:
+                        flats += 1
+
+            avg_ret = sum(return_values) / len(return_values) if return_values else None
+            items.append(
+                {
+                    "trade_date": td,
+                    "count": len(stocks),
+                    "up_n": ups,
+                    "down_n": downs,
+                    "flat_n": flats,
+                    "avg_return_pct": avg_ret,
+                    "stocks": stocks,
+                }
+            )
+
+        return safe_jsonify(
+            {
+                "meta": {
+                    "strategy_id": strategy_id,
+                    "days": days,
+                    "per_day_limit": per_day_limit,
+                    "latest_close_date": latest_close_date,
+                },
+                "items": items,
+            }
+        )
+    except sqlite3.OperationalError as exc:
+        return jsonify({'error': f'db error: {str(exc)}'}), 500
+    finally:
+        conn.close()
+
+
 def _v4_lab_latest_snapshot_mtime():
     paths = [
         V4_LAB_OUTPUT_DIR / 'v4_2_dynamic_hardened_candidate_latest.json',
@@ -2514,11 +2672,11 @@ def cup_handle_lab_stocks():
                 'is_success_strict': succ_val,
                 'end_return_t8': end_ret_t8,
                 'drawdown_mag_t1_t8': drawdown_t1_t8,
-                'history_cup_n': h.get('history_cup_n'),
-                'history_ready_n': h.get('history_ready_n'),
-                'history_success_n': h.get('history_success_n'),
-                'history_success_rate': h.get('history_success_rate'),
-                'history_has_success': h.get('history_has_success'),
+                'history_cup_n': int(h.get('history_cup_n') or 0),
+                'history_ready_n': int(h.get('history_ready_n') or 0),
+                'history_success_n': int(h.get('history_success_n') or 0),
+                'history_success_rate': (h.get('history_success_rate') if h.get('history_success_rate') is not None else 0.0),
+                'history_has_success': bool(h.get('history_has_success') or False),
             }
             grouped[code] = cur
         else:
@@ -2709,6 +2867,148 @@ def cup_handle_lab_stocks():
                 'v4_baseline_available_dates_n': v4_available_dates_n,
             },
             'entry_windows': entry_windows,
+        }
+    )
+
+
+@app.route('/api/cup-handle-lab/watch-pool', methods=['GET'])
+def cup_handle_lab_watch_pool():
+    """
+    Persistent tracking watch pool.
+    Source is independent table `cup_watch_pool_events`, not replay CSV.
+    """
+    limit = _safe_int_arg('limit', 240, min_value=20, max_value=1200)
+    offset = _safe_int_arg('offset', 0, min_value=0, max_value=50000)
+    signal_date = (request.args.get('signal_date') or '').strip()
+    source_pool = (request.args.get('source_pool') or '').strip().lower()
+    status = (request.args.get('status') or '').strip().lower()
+    if source_pool not in ('v4', 'hardened'):
+        source_pool = ''
+    if status not in ('in_progress', 'ready', 'validated'):
+        status = ''
+
+    where = []
+    params = []
+    if signal_date:
+        where.append('signal_date = ?')
+        params.append(signal_date)
+    if source_pool:
+        where.append('source_pool = ?')
+        params.append(source_pool)
+    if status:
+        where.append('status = ?')
+        params.append(status)
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ''
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            SELECT COUNT(*) AS n
+            FROM cup_watch_pool_events
+            {where_sql}
+            """,
+            tuple(params),
+        )
+        row_n = cur.fetchone()
+        total = int((row_n['n'] if isinstance(row_n, dict) else row_n[0]) or 0) if row_n else 0
+    except Exception:
+        total = 0
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"""
+                SELECT id, created_at, updated_at, stock_code, stock_name, signal_date, source_pool,
+                       run_date, market_state, segment_id, route_cluster, gate_count, dynamic_score,
+                       status, ready_t8, is_success_strict, end_return_t8, drawdown_mag_t1_t8
+                FROM cup_watch_pool_events
+                {where_sql}
+                ORDER BY signal_date DESC, updated_at DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                tuple(params + [limit, offset]),
+            )
+            rows = cur.fetchall() or []
+
+            cur.execute(
+                """
+                SELECT DISTINCT signal_date
+                FROM cup_watch_pool_events
+                WHERE signal_date IS NOT NULL AND signal_date <> ''
+                ORDER BY signal_date DESC
+                LIMIT 240
+                """
+            )
+            all_dates = [str((r['signal_date'] if isinstance(r, dict) else r[0]) or '').strip() for r in (cur.fetchall() or [])]
+            all_dates = [d for d in all_dates if d]
+            latest_signal_date = all_dates[0] if all_dates else None
+        except Exception:
+            rows = []
+            all_dates = []
+            latest_signal_date = None
+    finally:
+        conn.close()
+
+    items = []
+    for r in rows:
+        items.append(
+            {
+                'id': int(r['id']) if isinstance(r, dict) else int(r[0]),
+                'created_at': str(r['created_at']) if isinstance(r, dict) else str(r[1]),
+                'updated_at': str(r['updated_at']) if isinstance(r, dict) else str(r[2]),
+                'stock_code': str(r['stock_code']) if isinstance(r, dict) else str(r[3]),
+                'stock_name': (str(r['stock_name']) if isinstance(r, dict) else str(r[4])) or '',
+                'signal_date': (str(r['signal_date']) if isinstance(r, dict) else str(r[5])) or '',
+                'source_pool': (str(r['source_pool']) if isinstance(r, dict) else str(r[6])) or '',
+                'run_date': (str(r['run_date']) if isinstance(r, dict) else str(r[7])) or '',
+                'market_state': (str(r['market_state']) if isinstance(r, dict) else str(r[8])) or '',
+                'segment_id': (str(r['segment_id']) if isinstance(r, dict) else str(r[9])) or '',
+                'route_cluster': (str(r['route_cluster']) if isinstance(r, dict) else str(r[10])) or '',
+                'gate_count': _v4_lab_to_int((r['gate_count'] if isinstance(r, dict) else r[11]), 0),
+                'dynamic_score': _v4_lab_to_float((r['dynamic_score'] if isinstance(r, dict) else r[12]), 0.0),
+                'status': (str(r['status']) if isinstance(r, dict) else str(r[13])) or 'in_progress',
+                'ready_t8': _v4_lab_to_int((r['ready_t8'] if isinstance(r, dict) else r[14]), 0),
+                'is_success_strict': (
+                    None
+                    if ((r['is_success_strict'] if isinstance(r, dict) else r[15]) is None)
+                    else _v4_lab_to_int((r['is_success_strict'] if isinstance(r, dict) else r[15]), 0)
+                ),
+                'end_return_t8': (
+                    None
+                    if ((r['end_return_t8'] if isinstance(r, dict) else r[16]) is None)
+                    else _v4_lab_to_float((r['end_return_t8'] if isinstance(r, dict) else r[16]), 0.0)
+                ),
+                'drawdown_mag_t1_t8': (
+                    None
+                    if ((r['drawdown_mag_t1_t8'] if isinstance(r, dict) else r[17]) is None)
+                    else _v4_lab_to_float((r['drawdown_mag_t1_t8'] if isinstance(r, dict) else r[17]), 0.0)
+                ),
+            }
+        )
+
+    return safe_jsonify(
+        {
+            'items': items,
+            'total': total,
+            'limit': limit,
+            'offset': offset,
+            'meta': {
+                'latest_signal_date': latest_signal_date,
+                'available_signal_dates': all_dates,
+                'requested_signal_date': signal_date or None,
+                'source_pool': source_pool or None,
+                'status': status or None,
+                'window_mode': 'multi_day_default' if not signal_date else 'explicit_date',
+            },
         }
     )
 
@@ -2971,6 +3271,224 @@ def _v4_lab_upsert_live_compare_history(row):
     return merged
 
 
+def _v4_lab_read_learning_iter_history():
+    p = V4_LAB_OUTPUT_DIR / 'v4_2_learning_iteration_history.csv'
+    return _v4_lab_read_csv_rows(p)
+
+
+def _v4_lab_upsert_learning_iter_history(row):
+    p = V4_LAB_OUTPUT_DIR / 'v4_2_learning_iteration_history.csv'
+    fields = [
+        'run_date',
+        'snapshot_version',
+        'base_candidate_version',
+        'param_update_n',
+        'entry_improve_pct',
+        'entry_route_changed_n',
+        'entry_route_total_n',
+        'updated_at',
+    ]
+    rows = _v4_lab_read_csv_rows(p)
+    by_date = {str(r.get('run_date') or ''): r for r in rows if str(r.get('run_date') or '')}
+    by_date[str(row.get('run_date') or '')] = {k: row.get(k, '') for k in fields}
+    merged = [by_date[k] for k in sorted(by_date.keys())]
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open('w', encoding='utf-8', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        w.writerows(merged)
+    return merged
+
+
+def _v4_lab_read_strategy_change_audit_history():
+    p = V4_LAB_OUTPUT_DIR / 'v4_2_strategy_change_audit_history.csv'
+    return _v4_lab_read_csv_rows(p)
+
+
+def _v4_lab_upsert_strategy_change_audit_history(row):
+    p = V4_LAB_OUTPUT_DIR / 'v4_2_strategy_change_audit_history.csv'
+    fields = [
+        'run_date',
+        'baseline_version',
+        'candidate_version',
+        'change_type',
+        'change_note',
+        'baseline_n',
+        'candidate_n',
+        'ready_n',
+        'delta_success_rate_pp',
+        'drawdown_delta_pp',
+        'decision',
+        'decision_reason',
+        'threshold_success_pp',
+        'threshold_drawdown_pp',
+        'min_ready_n',
+        'created_at',
+    ]
+    rows = _v4_lab_read_csv_rows(p)
+    by_date = {str(r.get('run_date') or ''): r for r in rows if str(r.get('run_date') or '')}
+    by_date[str(row.get('run_date') or '')] = {k: row.get(k, '') for k in fields}
+    merged = [by_date[k] for k in sorted(by_date.keys())]
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open('w', encoding='utf-8', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        w.writerows(merged)
+    return merged
+
+
+def _v4_lab_flatten_hardening_params(snapshot_obj):
+    hard = (snapshot_obj or {}).get('hardening') or {}
+    profile = hard.get('profile') or {}
+    guards = hard.get('state_quality_guards') or {}
+    out = {}
+    for k, v in profile.items():
+        out[f'profile.{k}'] = v
+    for state, cfg in guards.items():
+        if not isinstance(cfg, dict):
+            continue
+        for k, v in cfg.items():
+            out[f'guard.{state}.{k}'] = v
+    return out
+
+
+def _v4_lab_route_slots(snapshot_obj):
+    out = {}
+    states = (snapshot_obj or {}).get('states') or {}
+    for state, obj in states.items():
+        routes = (obj or {}).get('routing_top3') or []
+        for i, r in enumerate(routes, start=1):
+            slot = f'{state}#{i}'
+            out[slot] = {
+                'cluster_id': str((r or {}).get('cluster_id') or ''),
+                'lift_vs_state': _v4_lab_to_float((r or {}).get('lift_vs_state'), 0.0),
+            }
+    return out
+
+
+def _v4_lab_load_previous_hardened_snapshot():
+    pattern = str(V4_LAB_OUTPUT_DIR / 'v4_2_dynamic_hardened_candidate_*.json')
+    paths = sorted(glob.glob(pattern))
+    if len(paths) < 2:
+        return {}
+    prev_path = paths[-2]
+    try:
+        with open(prev_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _v4_lab_compute_learning_iter_metrics(current_snapshot, previous_snapshot):
+    cur_params = _v4_lab_flatten_hardening_params(current_snapshot)
+    prev_params = _v4_lab_flatten_hardening_params(previous_snapshot)
+    all_param_keys = sorted(set(cur_params.keys()) | set(prev_params.keys()))
+    param_update_n = 0
+    for k in all_param_keys:
+        if str(cur_params.get(k, '')) != str(prev_params.get(k, '')):
+            param_update_n += 1
+
+    cur_slots = _v4_lab_route_slots(current_snapshot)
+    prev_slots = _v4_lab_route_slots(previous_snapshot)
+    slot_keys = sorted(set(cur_slots.keys()) | set(prev_slots.keys()))
+    changed_n = 0
+    improved_n = 0
+    comparable_n = 0
+    for k in slot_keys:
+        c = cur_slots.get(k) or {}
+        p = prev_slots.get(k) or {}
+        if str(c.get('cluster_id') or '') != str(p.get('cluster_id') or ''):
+            changed_n += 1
+        if k in cur_slots and k in prev_slots:
+            comparable_n += 1
+            if _v4_lab_to_float(c.get('lift_vs_state'), 0.0) > _v4_lab_to_float(p.get('lift_vs_state'), 0.0):
+                improved_n += 1
+
+    entry_improve_pct = (improved_n / comparable_n) if comparable_n > 0 else None
+    return {
+        'param_update_n': int(param_update_n),
+        'entry_improve_pct': entry_improve_pct,
+        'entry_route_changed_n': int(changed_n),
+        'entry_route_total_n': int(len(slot_keys)),
+    }
+
+
+def _cup_watch_sync_from_delivery(target_date: str, market_state: str, v4_rows: list, hard_rows: list):
+    """
+    Sync independent watch-pool events from today's delivery pools.
+    - Source pools: v4, hardened
+    - Event key: (stock_code, signal_date, source_pool)
+    """
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        now_iso = datetime.now().isoformat(timespec='seconds')
+
+        def _upsert_one(source_pool: str, row: dict):
+            code = str(row.get('stock_code') or '').strip()
+            if not code:
+                return
+            ev = _v4_lab_eval_success_t8(code, target_date, 0.04, 0.03, 5)
+            ready = bool(ev.get('ready'))
+            succ = ev.get('is_success_strict') if ready else None
+            end_ret = ev.get('end_return_t8') if ready else None
+            dd = ev.get('drawdown_mag_t1_t8') if ready else None
+            status = 'validated' if ready else 'in_progress'
+            cur.execute(
+                """
+                INSERT INTO cup_watch_pool_events (
+                    stock_code, stock_name, signal_date, source_pool, run_date,
+                    market_state, segment_id, route_cluster, gate_count, dynamic_score,
+                    status, ready_t8, is_success_strict, end_return_t8, drawdown_mag_t1_t8,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(stock_code, signal_date, source_pool) DO UPDATE SET
+                    stock_name=excluded.stock_name,
+                    run_date=excluded.run_date,
+                    market_state=excluded.market_state,
+                    segment_id=excluded.segment_id,
+                    route_cluster=excluded.route_cluster,
+                    gate_count=excluded.gate_count,
+                    dynamic_score=excluded.dynamic_score,
+                    status=excluded.status,
+                    ready_t8=excluded.ready_t8,
+                    is_success_strict=excluded.is_success_strict,
+                    end_return_t8=excluded.end_return_t8,
+                    drawdown_mag_t1_t8=excluded.drawdown_mag_t1_t8,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    code,
+                    str(row.get('stock_name') or '').strip() or None,
+                    target_date,
+                    source_pool,
+                    target_date,
+                    market_state or None,
+                    str(row.get('segment_id') or '').strip() or None,
+                    str(row.get('cluster_id') or '').strip() or None,
+                    _v4_lab_to_int(row.get('gate_count'), 0),
+                    _v4_lab_to_float(row.get('dynamic_score'), 0.0),
+                    status,
+                    1 if ready else 0,
+                    (None if succ is None else int(succ)),
+                    (None if end_ret is None else float(end_ret)),
+                    (None if dd is None else float(dd)),
+                    now_iso,
+                    now_iso,
+                ),
+            )
+
+        for r in v4_rows or []:
+            _upsert_one('v4', r)
+        for r in hard_rows or []:
+            _upsert_one('hardened', r)
+
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @app.route('/api/cup-handle-lab/v4-pool-compare', methods=['GET'])
 def cup_handle_lab_v4_pool_compare():
     """
@@ -3173,21 +3691,27 @@ def cup_handle_lab_v4_pool_compare():
     spec = {'strength': 0.04, 'drawdown': 0.03, 'up_days_min': 5}
     base_ready = base_succ = 0
     hard_ready = hard_succ = 0
+    base_dd_sum = 0.0
+    hard_dd_sum = 0.0
     for x in base_selected:
         ev = _v4_lab_eval_success_t8(x['stock_code'], target_date, spec['strength'], spec['drawdown'], spec['up_days_min'])
         if not ev.get('ready'):
             continue
         base_ready += 1
         base_succ += _v4_lab_to_int(ev.get('is_success_strict'), 0)
+        base_dd_sum += _v4_lab_to_float(ev.get('drawdown_mag_t1_t8'), 0.0)
     for x in hard_selected:
         ev = _v4_lab_eval_success_t8(x['stock_code'], target_date, spec['strength'], spec['drawdown'], spec['up_days_min'])
         if not ev.get('ready'):
             continue
         hard_ready += 1
         hard_succ += _v4_lab_to_int(ev.get('is_success_strict'), 0)
+        hard_dd_sum += _v4_lab_to_float(ev.get('drawdown_mag_t1_t8'), 0.0)
 
     base_rate = (base_succ / base_ready) if base_ready else 0.0
     hard_rate = (hard_succ / hard_ready) if hard_ready else 0.0
+    base_dd_avg = (base_dd_sum / base_ready) if base_ready else None
+    hard_dd_avg = (hard_dd_sum / hard_ready) if hard_ready else None
 
     row = {
         'run_date': target_date,
@@ -3205,8 +3729,85 @@ def cup_handle_lab_v4_pool_compare():
         'hard_success_rate': round(hard_rate, 6),
         'delta_success_rate': round(hard_rate - base_rate, 6),
     }
+    learning_iter = {
+        'param_update_n': None,
+        'entry_improve_pct': None,
+        'entry_route_changed_n': None,
+        'entry_route_total_n': None,
+    }
     if persist:
         history_rows = _v4_lab_upsert_live_compare_history(row)
+        prev_hardened = _v4_lab_load_previous_hardened_snapshot()
+        learning_iter = _v4_lab_compute_learning_iter_metrics(hardened, prev_hardened)
+        _v4_lab_upsert_learning_iter_history(
+            {
+                'run_date': target_date,
+                'snapshot_version': str(hardened.get('candidate_version') or ''),
+                'base_candidate_version': str(hardened.get('base_candidate_version') or ''),
+                'param_update_n': learning_iter.get('param_update_n'),
+                'entry_improve_pct': learning_iter.get('entry_improve_pct'),
+                'entry_route_changed_n': learning_iter.get('entry_route_changed_n'),
+                'entry_route_total_n': learning_iter.get('entry_route_total_n'),
+                'updated_at': datetime.now().isoformat(timespec='seconds'),
+            }
+        )
+        delta_pp = (hard_rate - base_rate) * 100.0
+        drawdown_delta_pp = None
+        if base_dd_avg is not None and hard_dd_avg is not None:
+            drawdown_delta_pp = (hard_dd_avg - base_dd_avg) * 100.0
+        min_ready_n = 30
+        keep_success_pp = 2.0
+        rollback_success_pp = -1.5
+        keep_drawdown_pp = 0.3
+        rollback_drawdown_pp = 0.8
+        if (
+            hard_ready >= min_ready_n
+            and delta_pp >= keep_success_pp
+            and (drawdown_delta_pp is None or drawdown_delta_pp <= keep_drawdown_pp)
+        ):
+            audit_decision = 'keep'
+            if drawdown_delta_pp is None:
+                audit_reason = f'满足保留阈值: Δ成功率={delta_pp:.2f}pp, ready_n={hard_ready}'
+            else:
+                audit_reason = f'满足保留阈值: Δ成功率={delta_pp:.2f}pp, Δ回撤={drawdown_delta_pp:.2f}pp, ready_n={hard_ready}'
+        elif (
+            hard_ready >= min_ready_n
+            and (
+                delta_pp <= rollback_success_pp
+                or (drawdown_delta_pp is not None and drawdown_delta_pp > rollback_drawdown_pp)
+            )
+        ):
+            audit_decision = 'rollback'
+            if drawdown_delta_pp is None:
+                audit_reason = f'触发回滚阈值: Δ成功率={delta_pp:.2f}pp, ready_n={hard_ready}'
+            else:
+                audit_reason = f'触发回滚阈值: Δ成功率={delta_pp:.2f}pp, Δ回撤={drawdown_delta_pp:.2f}pp, ready_n={hard_ready}'
+        else:
+            audit_decision = 'observe'
+            if drawdown_delta_pp is None:
+                audit_reason = f'继续观察: Δ成功率={delta_pp:.2f}pp, ready_n={hard_ready}（样本或提升未达阈值）'
+            else:
+                audit_reason = f'继续观察: Δ成功率={delta_pp:.2f}pp, Δ回撤={drawdown_delta_pp:.2f}pp, ready_n={hard_ready}（样本或阈值未达）'
+        _v4_lab_upsert_strategy_change_audit_history(
+            {
+                'run_date': target_date,
+                'baseline_version': str(hardened.get('base_candidate_version') or ''),
+                'candidate_version': str(hardened.get('candidate_version') or ''),
+                'change_type': 'threshold_or_route',
+                'change_note': 'auto_from_v4_pool_compare',
+                'baseline_n': len(base_selected),
+                'candidate_n': len(hard_selected),
+                'ready_n': hard_ready,
+                'delta_success_rate_pp': round(delta_pp, 6),
+                'drawdown_delta_pp': (round(drawdown_delta_pp, 6) if drawdown_delta_pp is not None else ''),
+                'decision': audit_decision,
+                'decision_reason': audit_reason,
+                'threshold_success_pp': keep_success_pp,
+                'threshold_drawdown_pp': keep_drawdown_pp,
+                'min_ready_n': min_ready_n,
+                'created_at': datetime.now().isoformat(timespec='seconds'),
+            }
+        )
     else:
         history_rows = _v4_lab_read_live_compare_history()
 
@@ -3218,6 +3819,13 @@ def cup_handle_lab_v4_pool_compare():
     base_sorted.sort(key=lambda x: float(x.get('dynamic_score') or 0.0), reverse=True)
     removed.sort(key=lambda x: (float(x.get('dynamic_score') or 0.0), int(x.get('gate_count') or 0)), reverse=True)
     kept.sort(key=lambda x: float(x.get('dynamic_score') or 0.0), reverse=True)
+
+    if persist:
+        try:
+            _cup_watch_sync_from_delivery(target_date, market_state, v4_sorted, kept)
+        except Exception:
+            # Watch-pool sync should not break compare API availability.
+            pass
 
     warnings = []
     if base_ready == 0:
@@ -3316,10 +3924,10 @@ def cup_handle_lab_v4_pool_compare():
                 'industry': s.get('industry') or '',
                 'sector_lv1': s.get('sector_lv1') or '',
                 'sector_lv2': s.get('sector_lv2') or '',
-                'history_cup_n': h.get('history_cup_n'),
-                'history_success_n': h.get('history_success_n'),
-                'history_success_rate': h.get('history_success_rate'),
-                'history_has_success': h.get('history_has_success'),
+                'history_cup_n': int(h.get('history_cup_n') or 0),
+                'history_success_n': int(h.get('history_success_n') or 0),
+                'history_success_rate': (h.get('history_success_rate') if h.get('history_success_rate') is not None else 0.0),
+                'history_has_success': bool(h.get('history_has_success') or False),
             }
         )
         return out
@@ -3428,6 +4036,7 @@ def cup_handle_lab_v4_pool_compare():
                 ],
             },
             'history_tail': history_rows[-40:],
+            'learning_iteration': learning_iter,
             'warnings': warnings,
         }
     )
@@ -3457,6 +4066,286 @@ def cup_handle_lab_diff():
     return safe_jsonify({'items': out, 'total': len(rows), 'limit': limit})
 
 
+@app.route('/api/cup-handle-lab/daily-brief', methods=['GET'])
+def cup_handle_lab_daily_brief():
+    """
+    Daily learning brief for UI:
+    - observation expansion
+    - forward validation summary
+    - reverse attribution findings (from questionnaire feedback)
+    """
+    req_date = (request.args.get('date') or '').strip()
+    replay_rows = _v4_lab_read_csv_rows(V4_LAB_OUTPUT_DIR / 'v4_2_replay_daily_pool.csv')
+    if not replay_rows:
+        return safe_jsonify({'error': 'daily brief source not ready'}), 404
+
+    all_dates = sorted({str(r.get('signal_date') or '').strip() for r in replay_rows if str(r.get('signal_date') or '').strip()})
+    if not all_dates:
+        return safe_jsonify({'error': 'no signal dates'}), 404
+    model_target_date = req_date.strip() if req_date else all_dates[-1]
+    if model_target_date in all_dates:
+        replay_metric_date = model_target_date
+    else:
+        replay_candidates = [d for d in all_dates if d <= model_target_date] if model_target_date else []
+        replay_metric_date = replay_candidates[-1] if replay_candidates else all_dates[-1]
+
+    prev_dates = [d for d in all_dates if d < replay_metric_date]
+    prev_date = prev_dates[-1] if prev_dates else None
+
+    def _codes_of(d: str):
+        return {
+            str(r.get('stock_code') or '').strip()
+            for r in replay_rows
+            if str(r.get('signal_date') or '').strip() == d and str(r.get('stock_code') or '').strip()
+        }
+
+    today_codes = _codes_of(replay_metric_date)
+    prev_codes = _codes_of(prev_date) if prev_date else set()
+    new_watch_codes = sorted(today_codes - prev_codes)
+
+    today_rows = [r for r in replay_rows if str(r.get('signal_date') or '').strip() == replay_metric_date]
+    ret_values = []
+    dd_values = []
+    for r in today_rows:
+        raw_ret = r.get('end_return_t8')
+        if raw_ret is not None and str(raw_ret).strip() != '':
+            try:
+                ret_values.append(float(raw_ret))
+            except Exception:
+                pass
+        raw_dd = r.get('drawdown_mag_t1_t8')
+        if raw_dd is not None and str(raw_dd).strip() != '':
+            try:
+                dd_values.append(float(raw_dd))
+            except Exception:
+                pass
+
+    daily_rows = _v4_lab_read_csv_rows(V4_LAB_OUTPUT_DIR / 'v4_2_replay_daily_summary.csv')
+    daily_by_date = {}
+    for r in daily_rows:
+        d = str(r.get('signal_date') or '').strip()
+        if d:
+            daily_by_date[d] = r
+    cur_daily = daily_by_date.get(replay_metric_date) or {}
+    prev_daily = daily_by_date.get(prev_date) or {}
+    cur_rate = _v4_lab_to_float(cur_daily.get('success_rate'), 0.0)
+    prev_rate = _v4_lab_to_float(prev_daily.get('success_rate'), cur_rate)
+    delta_rate = cur_rate - prev_rate
+    if delta_rate >= 0.005:
+        trend_flag = '升'
+    elif delta_rate <= -0.005:
+        trend_flag = '降'
+    else:
+        trend_flag = '震荡'
+
+    feedback_total_n = 0
+    top_risks = []
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM cup_handle_feedback
+            WHERE signal_date = ?
+            """,
+            (replay_metric_date,),
+        )
+        row = cur.fetchone()
+        feedback_total_n = int((row['cnt'] if isinstance(row, dict) else row[0]) or 0) if row else 0
+
+        cur.execute(
+            """
+            SELECT q3_primary_risk, COUNT(*) AS cnt
+            FROM cup_handle_feedback
+            WHERE signal_date = ? AND COALESCE(q3_primary_risk, '') <> ''
+            GROUP BY q3_primary_risk
+            ORDER BY cnt DESC, q3_primary_risk ASC
+            LIMIT 5
+            """,
+            (replay_metric_date,),
+        )
+        for r in cur.fetchall() or []:
+            top_risks.append(
+                {
+                    'risk': str(r['q3_primary_risk']) if isinstance(r, dict) else str(r[0]),
+                    'count': int(r['cnt']) if isinstance(r, dict) else int(r[1]),
+                }
+            )
+    except Exception:
+        feedback_total_n = 0
+        top_risks = []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    watch_total_n = 0
+    watch_new_n = len(new_watch_codes)
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM cup_watch_pool_events
+            WHERE source_pool = 'hardened'
+            """
+        )
+        rr = cur.fetchone()
+        watch_total_n = int((rr['n'] if isinstance(rr, dict) else rr[0]) or 0) if rr else 0
+        cur.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM cup_watch_pool_events
+            WHERE source_pool = 'hardened' AND signal_date = ?
+            """,
+            (model_target_date,),
+        )
+        rr2 = cur.fetchone()
+        watch_new_n = int((rr2['n'] if isinstance(rr2, dict) else rr2[0]) or 0) if rr2 else 0
+    except Exception:
+        watch_total_n = 0
+        watch_new_n = len(new_watch_codes)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    iter_rows = _v4_lab_read_learning_iter_history()
+    iter_by_date = {str(r.get('run_date') or '').strip(): r for r in iter_rows if str(r.get('run_date') or '').strip()}
+    iter_row = iter_by_date.get(model_target_date) or {}
+    iter_row_date = model_target_date if iter_row else None
+    if not iter_row and iter_by_date:
+        iter_dates = sorted(iter_by_date.keys())
+        le_dates = [d for d in iter_dates if d <= model_target_date]
+        if le_dates:
+            iter_row_date = le_dates[-1]
+            iter_row = iter_by_date.get(iter_row_date) or {}
+        else:
+            iter_row_date = iter_dates[-1]
+            iter_row = iter_by_date.get(iter_row_date) or {}
+    param_update_n = None
+    entry_improve_pct = None
+    if iter_row:
+        raw_param_n = iter_row.get('param_update_n')
+        if raw_param_n is not None and str(raw_param_n).strip() != '':
+            try:
+                param_update_n = int(float(raw_param_n))
+            except Exception:
+                param_update_n = None
+        raw_entry_pct = iter_row.get('entry_improve_pct')
+        if raw_entry_pct is not None and str(raw_entry_pct).strip() != '':
+            try:
+                entry_improve_pct = float(raw_entry_pct)
+            except Exception:
+                entry_improve_pct = None
+
+    audit_rows = _v4_lab_read_strategy_change_audit_history()
+    audit_by_date = {str(r.get('run_date') or '').strip(): r for r in audit_rows if str(r.get('run_date') or '').strip()}
+    audit_row = audit_by_date.get(model_target_date) or {}
+    audit_row_date = model_target_date if audit_row else None
+    if not audit_row and audit_by_date:
+        audit_dates = sorted(audit_by_date.keys())
+        le_dates = [d for d in audit_dates if d <= model_target_date]
+        if le_dates:
+            audit_row_date = le_dates[-1]
+            audit_row = audit_by_date.get(audit_row_date) or {}
+        else:
+            audit_row_date = audit_dates[-1]
+            audit_row = audit_by_date.get(audit_row_date) or {}
+
+    audit_delta_pp = None
+    audit_drawdown_delta_pp = None
+    audit_ready_n = None
+    audit_threshold_drawdown_pp = None
+    if audit_row:
+        raw_delta = audit_row.get('delta_success_rate_pp')
+        if raw_delta is not None and str(raw_delta).strip() != '':
+            try:
+                audit_delta_pp = float(raw_delta)
+            except Exception:
+                audit_delta_pp = None
+        raw_ready = audit_row.get('ready_n')
+        if raw_ready is not None and str(raw_ready).strip() != '':
+            try:
+                audit_ready_n = int(float(raw_ready))
+            except Exception:
+                audit_ready_n = None
+        raw_dd_delta = audit_row.get('drawdown_delta_pp')
+        if raw_dd_delta is not None and str(raw_dd_delta).strip() != '':
+            try:
+                audit_drawdown_delta_pp = float(raw_dd_delta)
+            except Exception:
+                audit_drawdown_delta_pp = None
+        raw_dd_gate = audit_row.get('threshold_drawdown_pp')
+        if raw_dd_gate is not None and str(raw_dd_gate).strip() != '':
+            try:
+                audit_threshold_drawdown_pp = float(raw_dd_gate)
+            except Exception:
+                audit_threshold_drawdown_pp = None
+
+    if audit_drawdown_delta_pp is None or audit_threshold_drawdown_pp is None:
+        drawdown_gate_status = 'pending_data'
+    else:
+        drawdown_gate_status = 'pass' if audit_drawdown_delta_pp <= audit_threshold_drawdown_pp else 'fail'
+
+    latest_updated_at = ''
+    if audit_row:
+        latest_updated_at = str(audit_row.get('created_at') or '').strip()
+    if (not latest_updated_at) and iter_row:
+        latest_updated_at = str(iter_row.get('updated_at') or '').strip()
+
+    return safe_jsonify(
+        {
+            'meta': {
+                'target_date': model_target_date,
+                'replay_metric_date': replay_metric_date,
+                'prev_date': prev_date,
+                'available_dates': all_dates[-120:],
+                'iteration_date': iter_row_date,
+                'latest_updated_at': latest_updated_at or None,
+            },
+            'daily_action': {
+                'observe_pool_n': watch_total_n if watch_total_n > 0 else len(today_codes),
+                'new_watch_n': watch_new_n,
+                'feedback_processed_n': feedback_total_n,
+            },
+            'forward_summary': {
+                't8_success_rate': cur_rate,
+                't8_success_rate_prev': prev_rate,
+                't8_success_trend': trend_flag,
+                'avg_return_t8': (sum(ret_values) / len(ret_values)) if ret_values else None,
+                'avg_drawdown_t1_t8': (sum(dd_values) / len(dd_values)) if dd_values else None,
+                'validated_sample_n': _v4_lab_to_int(cur_daily.get('pick_n'), len(today_codes)),
+            },
+            'reverse_findings': {
+                'top_risks': top_risks,
+            },
+            'model_iteration': {
+                'param_update_n': param_update_n,
+                'entry_improve_pct': entry_improve_pct,
+                'note': (None if (param_update_n is not None and entry_improve_pct is not None) else '参数更新数与入口完善增率按学习快照逐日补全'),
+            },
+            'strategy_audit': {
+                'run_date': audit_row_date,
+                'decision': str(audit_row.get('decision') or 'observe'),
+                'decision_reason': str(audit_row.get('decision_reason') or '暂无审计记录'),
+                'delta_success_rate_pp': audit_delta_pp,
+                'drawdown_delta_pp': audit_drawdown_delta_pp,
+                'ready_n': audit_ready_n,
+                'min_ready_n': _v4_lab_to_int(audit_row.get('min_ready_n'), 30) if audit_row else 30,
+                'baseline_version': str(audit_row.get('baseline_version') or ''),
+                'candidate_version': str(audit_row.get('candidate_version') or ''),
+                'drawdown_threshold_pp': audit_threshold_drawdown_pp,
+                'drawdown_gate_status': drawdown_gate_status,
+            },
+        }
+    )
+
+
 @app.route('/api/cup-handle-lab/audit', methods=['GET'])
 def cup_handle_lab_audit():
     table = _v4_lab_read_csv_rows(V4_LAB_OUTPUT_DIR / 'v4_2_hardened_audit_table.csv')
@@ -3474,6 +4363,211 @@ def cup_handle_lab_audit():
             },
         }
     )
+
+
+@app.route('/api/cup-handle-lab/retrain/runs', methods=['GET'])
+def cup_handle_lab_retrain_runs():
+    limit = _safe_int_arg('limit', 20, min_value=1, max_value=100)
+    runs = sorted(
+        _load_v4_lab_retrain_runs(),
+        key=lambda x: str(x.get('requested_at') or ''),
+        reverse=True,
+    )
+    state = _load_v4_lab_retrain_scheduler_state()
+    return safe_jsonify(
+        {
+            'items': runs[:limit],
+            'limit': limit,
+            'scheduler': {
+                'enabled': bool(V4_LAB_RETRAIN_ENABLED),
+                'trigger_hour': int(V4_LAB_RETRAIN_TRIGGER_HOUR),
+                'trigger_minute': int(V4_LAB_RETRAIN_TRIGGER_MINUTE),
+                'last_trigger_date': state.get('last_trigger_date'),
+                'last_checked_at': state.get('last_checked_at'),
+                'last_result': state.get('last_result'),
+            },
+        }
+    )
+
+
+@app.route('/api/cup-handle-lab/retrain/trigger', methods=['POST'])
+def cup_handle_lab_retrain_trigger():
+    # Run in request thread: simple and deterministic for now.
+    payload = request.get_json(silent=True) or {}
+    as_of_date = str(payload.get('as_of_date') or '').strip()[:10]
+    result = _run_v4_lab_retrain_cycle(trigger_source='manual', as_of_date=as_of_date)
+    code = 200 if result.get('ok') else 400
+    return safe_jsonify(result), code
+
+
+@app.route('/api/cup-handle-lab/feedback', methods=['GET'])
+def cup_handle_lab_feedback_list():
+    """
+    Questionnaire feedback for cup-handle lab.
+    - filter: stock_code
+    """
+    stock_code = (request.args.get('stock_code') or '').strip()
+    limit = _safe_int_arg('limit', 20, min_value=1, max_value=200)
+    offset = _safe_int_arg('offset', 0, min_value=0, max_value=10000)
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        if stock_code:
+            cur.execute(
+                """
+                SELECT id, created_at, stock_code, stock_name, signal_date, main_view, delivery_view,
+                       q1_should_enter, q2_reasons, q3_primary_risk, q4_horizon, q5_drawdown_tolerance,
+                       extra_json
+                FROM cup_handle_feedback
+                WHERE stock_code = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (stock_code, limit, offset),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT id, created_at, stock_code, stock_name, signal_date, main_view, delivery_view,
+                       q1_should_enter, q2_reasons, q3_primary_risk, q4_horizon, q5_drawdown_tolerance,
+                       extra_json
+                FROM cup_handle_feedback
+                ORDER BY created_at DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            )
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    items = []
+    for r in rows or []:
+        q2 = []
+        try:
+            raw = r['q2_reasons'] if isinstance(r, dict) else r[8]
+            q2 = json.loads(raw) if raw else []
+            if not isinstance(q2, list):
+                q2 = []
+        except Exception:
+            q2 = []
+        items.append(
+            {
+                'id': int(r['id']) if isinstance(r, dict) else int(r[0]),
+                'created_at': str(r['created_at']) if isinstance(r, dict) else str(r[1]),
+                'stock_code': str(r['stock_code']) if isinstance(r, dict) else str(r[2]),
+                'stock_name': (str(r['stock_name']) if isinstance(r, dict) else str(r[3])) or '',
+                'signal_date': (str(r['signal_date']) if isinstance(r, dict) else str(r[4])) or '',
+                'main_view': (str(r['main_view']) if isinstance(r, dict) else str(r[5])) or '',
+                'delivery_view': (str(r['delivery_view']) if isinstance(r, dict) else str(r[6])) or '',
+                'q1_should_enter': (str(r['q1_should_enter']) if isinstance(r, dict) else str(r[7])) or '',
+                'q2_reasons': q2,
+                'q3_primary_risk': (str(r['q3_primary_risk']) if isinstance(r, dict) else str(r[9])) or '',
+                'q4_horizon': (str(r['q4_horizon']) if isinstance(r, dict) else str(r[10])) or '',
+                'q5_drawdown_tolerance': (str(r['q5_drawdown_tolerance']) if isinstance(r, dict) else str(r[11])) or '',
+            }
+        )
+
+    return safe_jsonify({'items': items, 'limit': limit, 'offset': offset})
+
+
+@app.route('/api/cup-handle-lab/feedback', methods=['POST'])
+def cup_handle_lab_feedback_submit():
+    """
+    Submit questionnaire feedback (v1) for a selected stock.
+    Keep validation strict to avoid turning into a free-form message board.
+    """
+    payload = request.get_json(silent=True) or {}
+    stock_code = str(payload.get('stock_code') or '').strip()
+    if not stock_code:
+        return safe_jsonify({'error': 'stock_code_required'}), 400
+
+    stock_name = str(payload.get('stock_name') or '').strip()
+    signal_date = str(payload.get('signal_date') or '').strip()
+    main_view = str(payload.get('main_view') or '').strip()
+    delivery_view = str(payload.get('delivery_view') or '').strip()
+
+    q1 = str(payload.get('q1_should_enter') or '').strip()
+    q2 = payload.get('q2_reasons')
+    q3 = str(payload.get('q3_primary_risk') or '').strip()
+    q4 = str(payload.get('q4_horizon') or '').strip()
+    q5 = str(payload.get('q5_drawdown_tolerance') or '').strip()
+
+    allowed_q1 = {'should', 'should_not', 'unsure'}
+    allowed_q2 = {
+        'shape_quality',
+        'volume_rhythm',
+        'market_state',
+        'sector_theme',
+        'drawdown_risk',
+        'other_structural',
+    }
+    allowed_q3 = {'shape', 'volume', 'market', 'sector', 'risk_reward'}
+    allowed_q4 = {'t5', 't8', 't13'}
+    allowed_q5 = {'low', 'mid', 'high'}
+
+    if q1 not in allowed_q1:
+        return safe_jsonify({'error': 'invalid_q1'}), 400
+
+    q2_list = []
+    if isinstance(q2, list):
+        q2_list = [str(x).strip() for x in q2 if str(x).strip()]
+    elif isinstance(q2, str) and q2.strip():
+        # Allow CSV string for backward compatibility.
+        q2_list = [x.strip() for x in q2.split(',') if x.strip()]
+    q2_list = [x for x in q2_list if x in allowed_q2]
+
+    if q3 and q3 not in allowed_q3:
+        return safe_jsonify({'error': 'invalid_q3'}), 400
+    if q4 and q4 not in allowed_q4:
+        return safe_jsonify({'error': 'invalid_q4'}), 400
+    if q5 and q5 not in allowed_q5:
+        return safe_jsonify({'error': 'invalid_q5'}), 400
+
+    extra = {
+        'client': 'cup-handle-lab',
+        'schema_version': 'q_v1',
+    }
+    try:
+        # Preserve future fields without breaking DB schema.
+        for k in ('meta', 'tags', 'run_id'):
+            if k in payload:
+                extra[k] = payload.get(k)
+    except Exception:
+        extra = {'client': 'cup-handle-lab', 'schema_version': 'q_v1'}
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO cup_handle_feedback (
+                stock_code, stock_name, signal_date, main_view, delivery_view,
+                q1_should_enter, q2_reasons, q3_primary_risk, q4_horizon, q5_drawdown_tolerance,
+                extra_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                stock_code,
+                stock_name or None,
+                signal_date or None,
+                main_view or None,
+                delivery_view or None,
+                q1,
+                json.dumps(q2_list, ensure_ascii=False),
+                q3 or None,
+                q4 or None,
+                q5 or None,
+                json.dumps(extra, ensure_ascii=False),
+            ),
+        )
+        conn.commit()
+        fid = cur.lastrowid
+    finally:
+        conn.close()
+
+    return safe_jsonify({'ok': True, 'feedback_id': fid})
 
 
 
@@ -5855,11 +6949,20 @@ def _save_five_flags_runs_registry(runs):
 FIVE_FLAGS_QUEUE_LOCK = threading.Lock()
 FIVE_FLAGS_QUEUE_WORKER_STARTED = False
 FIVE_FLAGS_DAILY_SCHEDULER_STARTED = False
+V4_LAB_RETRAIN_LOCK = threading.Lock()
+V4_LAB_RETRAIN_SCHEDULER_STARTED = False
 VALID_MARKET_PHASES = {'WAVE_1', 'WAVE_2', 'WAVE_3', 'WAVE_4', 'WAVE_5', 'WAVE_A', 'WAVE_B', 'WAVE_C'}
 VALID_PROFILE_SLOTS = {'active', 'candidate'}
 FIVE_FLAGS_DAILY_TRIGGER_HOUR = int(os.environ.get('FIVE_FLAGS_DAILY_TRIGGER_HOUR', '17'))
 FIVE_FLAGS_DAILY_TRIGGER_MINUTE = int(os.environ.get('FIVE_FLAGS_DAILY_TRIGGER_MINUTE', '0'))
 FIVE_FLAGS_DAILY_ENABLED = os.environ.get('FIVE_FLAGS_DAILY_ENABLED', '1') == '1'
+V4_LAB_RETRAIN_TRIGGER_HOUR = int(os.environ.get('V4_LAB_RETRAIN_TRIGGER_HOUR', '17'))
+V4_LAB_RETRAIN_TRIGGER_MINUTE = int(os.environ.get('V4_LAB_RETRAIN_TRIGGER_MINUTE', '0'))
+V4_LAB_RETRAIN_ENABLED = os.environ.get('V4_LAB_RETRAIN_ENABLED', '1') == '1'
+V4_LAB_RETRAIN_TIMEOUT_SEC = int(os.environ.get('V4_LAB_RETRAIN_TIMEOUT_SEC', '5400'))
+V4_LAB_RETRAIN_COMMAND = (
+    os.environ.get('V4_LAB_RETRAIN_COMMAND', '') or 'python3 research/v4_trend_research/scripts/retrain_daily.py --as-of auto'
+).strip()
 FIVE_FLAGS_EMAIL_TO = os.environ.get('FIVE_FLAGS_EMAIL_TO', '')
 SMTP_HOST = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
 SMTP_PORT = int(os.environ.get('SMTP_PORT', '465'))
@@ -6029,6 +7132,373 @@ def _save_daily_scheduler_state(state):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(state if isinstance(state, dict) else {}, f, ensure_ascii=False, indent=2)
+
+
+def _v4_lab_retrain_runs_path():
+    return DASHBOARD_DIR.parent / 'data' / 'v4_lab_retrain_runs.json'
+
+
+def _v4_lab_retrain_scheduler_state_path():
+    return DASHBOARD_DIR.parent / 'data' / 'v4_lab_retrain_scheduler_state.json'
+
+
+def _load_v4_lab_retrain_runs():
+    path = _v4_lab_retrain_runs_path()
+    if not path.exists():
+        return []
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _save_v4_lab_retrain_runs(runs):
+    path = _v4_lab_retrain_runs_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    items = [x for x in (runs or []) if isinstance(x, dict)]
+    items = sorted(items, key=lambda x: str(x.get('requested_at') or ''), reverse=True)[:100]
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(items, f, ensure_ascii=False, indent=2, default=str)
+
+
+def _append_v4_lab_retrain_run(run):
+    runs = _load_v4_lab_retrain_runs()
+    runs.append(run)
+    _save_v4_lab_retrain_runs(runs)
+
+
+def _load_v4_lab_retrain_scheduler_state():
+    path = _v4_lab_retrain_scheduler_state_path()
+    if not path.exists():
+        return {}
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_v4_lab_retrain_scheduler_state(state):
+    path = _v4_lab_retrain_scheduler_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(state if isinstance(state, dict) else {}, f, ensure_ascii=False, indent=2)
+
+
+def _v4_lab_snapshot_latest_paths():
+    return [
+        V4_LAB_OUTPUT_DIR / 'v4_2_dynamic_candidate_latest.json',
+        V4_LAB_OUTPUT_DIR / 'v4_2_dynamic_hardened_candidate_latest.json',
+    ]
+
+
+def _promote_latest_versioned_v4_lab_snapshots():
+    promoted = []
+    file_specs = [
+        (
+            'candidate',
+            V4_LAB_OUTPUT_DIR / 'v4_2_dynamic_candidate_latest.json',
+            str(V4_LAB_OUTPUT_DIR / 'v4_2_dynamic_candidate_*.json'),
+        ),
+        (
+            'hardened',
+            V4_LAB_OUTPUT_DIR / 'v4_2_dynamic_hardened_candidate_latest.json',
+            str(V4_LAB_OUTPUT_DIR / 'v4_2_dynamic_hardened_candidate_*.json'),
+        ),
+    ]
+    for label, latest_path, pattern in file_specs:
+        candidates = []
+        for raw in glob.glob(pattern):
+            p = Path(raw)
+            if p.name.endswith('_latest.json'):
+                continue
+            if p.exists() and p.is_file():
+                candidates.append(p)
+        if not candidates:
+            continue
+        candidates.sort(key=lambda p: p.stat().st_mtime)
+        src = candidates[-1]
+        latest_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = latest_path.with_suffix(latest_path.suffix + '.tmp')
+        with open(src, 'r', encoding='utf-8') as rf, open(tmp, 'w', encoding='utf-8') as wf:
+            wf.write(rf.read())
+        os.replace(tmp, latest_path)
+        promoted.append({'kind': label, 'source': str(src), 'target': str(latest_path)})
+    if not promoted:
+        return {'ok': False, 'error': 'no versioned snapshot files found for promotion'}
+    return {'ok': True, 'promoted': promoted}
+
+
+def _capture_v4_lab_snapshot_backup():
+    backup = {}
+    for p in _v4_lab_snapshot_latest_paths():
+        key = str(p)
+        try:
+            if p.exists():
+                backup[key] = {'exists': True, 'content': p.read_text(encoding='utf-8')}
+            else:
+                backup[key] = {'exists': False, 'content': None}
+        except Exception:
+            backup[key] = {'exists': False, 'content': None}
+    return backup
+
+
+def _restore_v4_lab_snapshot_backup(backup):
+    for raw_path, bag in (backup or {}).items():
+        p = Path(str(raw_path))
+        existed = bool((bag or {}).get('exists'))
+        content = (bag or {}).get('content')
+        try:
+            if existed and isinstance(content, str):
+                p.parent.mkdir(parents=True, exist_ok=True)
+                tmp = p.with_suffix(p.suffix + '.tmp')
+                with open(tmp, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                os.replace(tmp, p)
+            elif p.exists():
+                p.unlink()
+        except Exception:
+            pass
+
+
+def _latest_trade_date_value():
+    conn = get_stock_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT MAX(trade_date) AS d FROM daily_prices")
+        row = cur.fetchone()
+        if isinstance(row, dict):
+            return str(row.get('d') or '')[:10]
+        return str((row[0] if row else '') or '')[:10]
+    except Exception:
+        return ''
+    finally:
+        conn.close()
+
+
+def _previous_trade_date_before(day_iso: str):
+    d = str(day_iso or '')[:10]
+    if not d:
+        return ''
+    conn = get_stock_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT MAX(trade_date) AS d FROM daily_prices WHERE trade_date < ?", (d,))
+        row = cur.fetchone()
+        if isinstance(row, dict):
+            return str(row.get('d') or '')[:10]
+        return str((row[0] if row else '') or '')[:10]
+    except Exception:
+        return ''
+    finally:
+        conn.close()
+
+
+def _run_v4_lab_retrain_command_once(as_of_date: str = ''):
+    if not V4_LAB_RETRAIN_COMMAND:
+        # Fallback: promote latest versioned snapshots to *_latest.json
+        promoted = _promote_latest_versioned_v4_lab_snapshots()
+        if not promoted.get('ok'):
+            return promoted
+        return {'ok': True, 'mode': 'snapshot_promote', **promoted}
+    try:
+        argv = shlex.split(V4_LAB_RETRAIN_COMMAND)
+    except Exception as e:
+        return {'ok': False, 'error': f'invalid retrain command: {str(e)}'}
+    if not argv:
+        return {'ok': False, 'error': 'invalid retrain command: empty argv'}
+    as_of = str(as_of_date or '')[:10]
+    if as_of:
+        argv.extend(['--as-of', as_of])
+    try:
+        proc = subprocess.run(
+            argv,
+            cwd=str(DASHBOARD_DIR.parent),
+            capture_output=True,
+            text=True,
+            timeout=max(30, int(V4_LAB_RETRAIN_TIMEOUT_SEC)),
+            check=False,
+        )
+        out_tail = '\n'.join((proc.stdout or '').splitlines()[-120:])
+        err_tail = '\n'.join((proc.stderr or '').splitlines()[-120:])
+        return {
+            'ok': proc.returncode == 0,
+            'returncode': proc.returncode,
+            'stdout_tail': out_tail,
+            'stderr_tail': err_tail,
+            'as_of_date': as_of or None,
+        }
+    except subprocess.TimeoutExpired:
+        return {'ok': False, 'error': f'train command timeout: {V4_LAB_RETRAIN_TIMEOUT_SEC}s'}
+    except Exception as e:
+        return {'ok': False, 'error': f'train command failed: {str(e)}'}
+
+
+def _run_v4_lab_compare_persist_once():
+    try:
+        with app.test_client() as c:
+            resp = c.get('/api/cup-handle-lab/v4-pool-compare', query_string={'persist': '1', 'limit': '200'})
+            data = resp.get_json(silent=True) or {}
+            if resp.status_code >= 400:
+                return {'ok': False, 'error': data.get('error') or f'compare failed({resp.status_code})'}
+            meta = data.get('meta') or {}
+            quality = data.get('quality') or {}
+            return {
+                'ok': True,
+                'target_date': str(meta.get('target_date') or ''),
+                'delta_success_rate': _v4_lab_to_float(quality.get('delta_success_rate'), 0.0),
+            }
+    except Exception as e:
+        return {'ok': False, 'error': f'compare persist failed: {str(e)}'}
+
+
+def _latest_v4_lab_audit_by_date(run_date: str):
+    rd = str(run_date or '')[:10]
+    rows = _v4_lab_read_strategy_change_audit_history()
+    rows.sort(key=lambda r: str(r.get('updated_at') or ''))
+    for r in reversed(rows):
+        if str(r.get('run_date') or '')[:10] == rd:
+            return r
+    return None
+
+
+def _v4_lab_should_trigger_daily_retrain(now_dt):
+    if not V4_LAB_RETRAIN_ENABLED:
+        return False
+    if now_dt.hour < V4_LAB_RETRAIN_TRIGGER_HOUR:
+        return False
+    if now_dt.hour == V4_LAB_RETRAIN_TRIGGER_HOUR and now_dt.minute < V4_LAB_RETRAIN_TRIGGER_MINUTE:
+        return False
+    state = _load_v4_lab_retrain_scheduler_state()
+    today = now_dt.date().isoformat()
+    if state.get('last_trigger_date') == today:
+        return False
+    # Daily retrain uses previous trade date as-of (T-1 relative to calendar day).
+    as_of = _previous_trade_date_before(today)
+    if not as_of:
+        return False
+    if str(state.get('last_trigger_as_of_date') or '') == as_of:
+        return False
+    return True
+
+
+def _run_v4_lab_retrain_cycle(trigger_source='manual', as_of_date=''):
+    if not V4_LAB_RETRAIN_LOCK.acquire(blocking=False):
+        return {'ok': False, 'status': 'skipped_running', 'message': 'retrain already running'}
+    resolved_as_of_date = str(as_of_date or '')[:10]
+    if not resolved_as_of_date:
+        resolved_as_of_date = _previous_trade_date_before(datetime.now().date().isoformat())
+    if not resolved_as_of_date:
+        return {'ok': False, 'status': 'failed', 'message': 'no previous trade date available'}
+    run_id = f'v4r_{datetime.now().strftime("%Y%m%d_%H%M%S")}_{uuid.uuid4().hex[:8]}'
+    started_at = datetime.now().isoformat()
+    run = {
+        'run_id': run_id,
+        'source': str(trigger_source or 'manual'),
+        'command': V4_LAB_RETRAIN_COMMAND,
+        'as_of_date': resolved_as_of_date,
+        'requested_at': started_at,
+        'started_at': started_at,
+        'completed_at': None,
+        'status': 'running',
+        'max_attempts': 2,  # initial + 1 retry
+        'attempt_count': 0,
+        'result': {},
+    }
+    try:
+        backup = _capture_v4_lab_snapshot_backup()
+        final_error = ''
+        for attempt in range(1, 3):
+            run['attempt_count'] = attempt
+            cmd_res = _run_v4_lab_retrain_command_once(as_of_date=resolved_as_of_date)
+            if not cmd_res.get('ok'):
+                final_error = str(cmd_res.get('error') or f"returncode={cmd_res.get('returncode')}")
+                run['result'] = {'step': 'train', **cmd_res}
+                continue
+
+            compare_res = _run_v4_lab_compare_persist_once()
+            if not compare_res.get('ok'):
+                final_error = str(compare_res.get('error') or 'compare persist failed')
+                run['result'] = {'step': 'compare', **compare_res, 'train': cmd_res}
+                continue
+
+            target_date = str(compare_res.get('target_date') or '')[:10]
+            audit = _latest_v4_lab_audit_by_date(target_date)
+            decision = str((audit or {}).get('decision') or 'observe').strip().lower()
+            if decision == 'rollback':
+                _restore_v4_lab_snapshot_backup(backup)
+                final_error = f'gate rollback on {target_date}'
+                run['result'] = {
+                    'step': 'gate',
+                    'target_date': target_date,
+                    'decision': decision,
+                    'audit': audit,
+                    'train': cmd_res,
+                    'compare': compare_res,
+                }
+                continue
+
+            run['status'] = 'completed'
+            run['result'] = {
+                'step': 'done',
+                'target_date': target_date,
+                'decision': decision,
+                'audit': audit,
+                'train': cmd_res,
+                'compare': compare_res,
+            }
+            break
+
+        if run['status'] != 'completed':
+            run['status'] = 'failed'
+            run['result'] = {
+                **(run.get('result') or {}),
+                'error': final_error or 'retrain failed after retry',
+            }
+            _restore_v4_lab_snapshot_backup(backup)
+    except Exception as e:
+        run['status'] = 'failed'
+        run['result'] = {'error': f'unexpected error: {str(e)}'}
+    finally:
+        run['completed_at'] = datetime.now().isoformat()
+        _append_v4_lab_retrain_run(run)
+        V4_LAB_RETRAIN_LOCK.release()
+    return {
+        'ok': run.get('status') == 'completed',
+        'status': run.get('status'),
+        'run_id': run_id,
+        'as_of_date': resolved_as_of_date,
+    }
+
+
+def _start_v4_lab_daily_retrain_scheduler():
+    global V4_LAB_RETRAIN_SCHEDULER_STARTED
+    if V4_LAB_RETRAIN_SCHEDULER_STARTED:
+        return
+
+    def _scheduler_loop():
+        while True:
+            try:
+                now_dt = datetime.now()
+                if _v4_lab_should_trigger_daily_retrain(now_dt):
+                    state = _load_v4_lab_retrain_scheduler_state()
+                    state['last_checked_at'] = now_dt.isoformat()
+                    as_of = _previous_trade_date_before(now_dt.date().isoformat())
+                    res = _run_v4_lab_retrain_cycle(trigger_source='daily_auto_close', as_of_date=as_of)
+                    state['last_trigger_date'] = now_dt.date().isoformat()
+                    state['last_trigger_as_of_date'] = as_of
+                    state['last_result'] = res
+                    _save_v4_lab_retrain_scheduler_state(state)
+            except Exception:
+                pass
+            time.sleep(30)
+
+    t = threading.Thread(target=_scheduler_loop, name='v4_lab_daily_retrain_scheduler', daemon=True)
+    t.start()
+    V4_LAB_RETRAIN_SCHEDULER_STARTED = True
 
 
 def _check_five_flags_unprocessed_data_readiness():
@@ -7277,6 +8747,7 @@ def five_flags_pool_upload_status(job_id):
 
 _start_five_flags_queue_worker()
 _start_five_flags_daily_scheduler()
+_start_v4_lab_daily_retrain_scheduler()
 
 
 if __name__ == '__main__':

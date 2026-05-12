@@ -5,9 +5,11 @@ import {
   type CupHandleLabDailyItem,
   type CupHandleLabDiffItem,
   type CupHandleLabAuditResponse,
-  type CupHandleLabStockItem,
+  type CupHandleLabWatchPoolItem,
   type CupHandleLabAlignmentResponse,
   type CupHandleLabV4PoolCompareResponse,
+  type CupHandleLabFeedbackItem,
+  type CupHandleLabDailyBriefResponse,
 } from '../api';
 
 interface CupHandleLabProps {
@@ -24,6 +26,19 @@ const num = (v: number | null | undefined): string => {
   return String(v);
 };
 
+const fmtDateTime = (raw: any): string => {
+  const s = String(raw ?? '').trim();
+  if (!s) return '-';
+  return s.slice(0, 10);
+};
+
+const normalizeStockCode = (raw: any): string => {
+  const s = String(raw ?? '').trim();
+  if (!s) return '';
+  const m = /^(\d+)\.0+$/.exec(s);
+  return m ? m[1] : s;
+};
+
 const stateLabel = (raw: string): string => {
   if (raw === 'S1_risk_on') return 'S1 风险偏好';
   if (raw === 'S2_neutral') return 'S2 中性';
@@ -37,6 +52,73 @@ const segmentLabel = (raw: string): string => {
   if (raw === 'wide_shallow') return '宽杯浅杯';
   if (raw === 'wide_deep') return '宽杯深杯';
   return raw || '-';
+};
+
+const sectorHeatLabel = (count: number): '低' | '中' | '高' => {
+  if (count >= 6) return '高';
+  if (count >= 3) return '中';
+  return '低';
+};
+
+const ruleToZh = (raw: string): string => {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const normalized = s.replace(/\s+/g, '');
+  const parts = normalized.split('&').map((x) => x.trim()).filter(Boolean);
+  const out: string[] = [];
+  for (const p of parts) {
+    let m: RegExpExecArray | null = null;
+    m = /^rim<=([0-9.]+)$/.exec(p);
+    if (m) {
+      out.push(`杯宽(天)≤${m[1]}`);
+      continue;
+    }
+    m = /^([0-9.]+)<rim<=([0-9.]+)$/.exec(p);
+    if (m) {
+      out.push(`杯宽(天)${m[1]}~${m[2]}`);
+      continue;
+    }
+    m = /^cup>([0-9.]+)$/.exec(p);
+    if (m) {
+      out.push(`杯深>${(Number(m[1]) * 100).toFixed(0)}%`);
+      continue;
+    }
+    m = /^([0-9.]+)<cup<=([0-9.]+)$/.exec(p);
+    if (m) {
+      out.push(`杯深${(Number(m[1]) * 100).toFixed(0)}%~${(Number(m[2]) * 100).toFixed(0)}%`);
+      continue;
+    }
+    m = /^amount<=([0-9.]+)$/.exec(p);
+    if (m) {
+      out.push(`成交额比(升/跌)≤${m[1]}`);
+      continue;
+    }
+    out.push(p);
+  }
+  return out.join(' · ');
+};
+
+const entryIdLabelFallback = (raw: string): string => {
+  const s = String(raw || '').trim();
+  if (!s) return '-';
+  const parts = s.split('_').filter(Boolean);
+  if (!parts.length) return s;
+  const mapped = parts
+    .map((p) => {
+      if (/^C\d+$/i.test(p)) return '';
+      if (p === 'precision') return '';
+      if (p === 'defensive') return '';
+      const m = /^([a-z]+)(\d+)$/i.exec(p);
+      if (!m) return '';
+      const key = m[1].toLowerCase();
+      const n = m[2];
+      if (key === 'rim') return `杯宽(天)≤${n}`;
+      if (key === 'cup') return `杯深>${n}%`;
+      if (key === 'amt') return `成交额比(升/跌)≤${(Number(n) / 100).toFixed(2)}`;
+      return '';
+    })
+    .filter(Boolean);
+  return mapped.join(' · ') || s;
 };
 
 export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
@@ -73,41 +155,48 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
   const [daily, setDaily] = useState<CupHandleLabDailyItem[]>([]);
   const [diff, setDiff] = useState<CupHandleLabDiffItem[]>([]);
   const [audit, setAudit] = useState<CupHandleLabAuditResponse | null>(null);
-  const [stocks, setStocks] = useState<CupHandleLabStockItem[]>([]);
-  const [entryWindows, setEntryWindows] = useState<Array<{ entry_id: string; entry_desc: string; pick_n: number; avg_dynamic_score: number; estimated_win_rate: number }>>([]);
-  const [stockMeta, setStockMeta] = useState<{
+  const [watchItems, setWatchItems] = useState<CupHandleLabWatchPoolItem[]>([]);
+  const [watchMeta, setWatchMeta] = useState<{
     latest_signal_date?: string | null;
-    window_mode?: string;
-    window_days?: number;
-    used_date_count?: number;
-    requested_signal_date?: string | null;
     available_signal_dates?: string[];
-    source_mode?: string;
-    excluded_not_in_v4_n?: number;
-    v4_pool_total_n?: number;
-    v42_candidate_rows_n?: number;
-    v42_rows_in_v4_n?: number;
-    v4_baseline_missing_dates?: string[];
-    v4_baseline_missing_dates_n?: number;
-    v4_baseline_available_dates_n?: number;
+    requested_signal_date?: string | null;
+    window_mode?: string;
   }>({});
+  const [entryWindows, setEntryWindows] = useState<Array<{ entry_id: string; entry_desc: string; pick_n: number; avg_dynamic_score: number; estimated_win_rate: number }>>([]);
   const [alignment, setAlignment] = useState<CupHandleLabAlignmentResponse | null>(null);
   const [alignmentDate, setAlignmentDate] = useState('');
   const [poolCompare, setPoolCompare] = useState<CupHandleLabV4PoolCompareResponse | null>(null);
   const [poolCompareDate, setPoolCompareDate] = useState('');
   const [poolCompareLoading, setPoolCompareLoading] = useState(false);
-  const [deliveryView, setDeliveryView] = useState<'hardened' | 'v4'>('hardened');
+  const [poolCompareError, setPoolCompareError] = useState('');
+  const deliveryView = 'hardened' as const;
   const [mainView, setMainView] = useState<'delivery' | 'replay'>('delivery');
   const [replaySignalDate, setReplaySignalDate] = useState('');
+  const [replayDateLocked, setReplayDateLocked] = useState(false);
   const [themeMode, setThemeMode] = useState<'off' | 'prefer' | 'only'>('off');
   const [selectedThemes, setSelectedThemes] = useState<string[]>(['AiDC', '绿能新能', '算电结合', '国产替代', '储能', '新型医药']);
   const [stockWindowMode, setStockWindowMode] = useState<'adaptive' | 'latest' | 'fixed'>('adaptive');
   const [stockWindowDays, setStockWindowDays] = useState<number>(20);
   const [entryFilter, setEntryFilter] = useState('');
-  const [selectedStockCode, setSelectedStockCode] = useState('');
+  const [selectedReplayStockCode, setSelectedReplayStockCode] = useState('');
+  const [selectedDeliveryStockCode, setSelectedDeliveryStockCode] = useState('');
+
+  // Questionnaire feedback (v1): structured to avoid noisy free-form input.
+  const [feedbackItems, setFeedbackItems] = useState<CupHandleLabFeedbackItem[]>([]);
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [feedbackError, setFeedbackError] = useState('');
+  const [fbQ1, setFbQ1] = useState<'should' | 'should_not' | 'unsure'>('unsure');
+  const [fbQ2, setFbQ2] = useState<string[]>([]);
+  const [fbQ3, setFbQ3] = useState<'' | 'shape' | 'volume' | 'market' | 'sector' | 'risk_reward'>('');
+  const [fbQ4, setFbQ4] = useState<'t5' | 't8' | 't13'>('t8');
+  const [fbQ5, setFbQ5] = useState<'low' | 'mid' | 'high'>('mid');
+  const [fbLastSubmitMsg, setFbLastSubmitMsg] = useState('');
+  const [dailyBrief, setDailyBrief] = useState<CupHandleLabDailyBriefResponse | null>(null);
+  const [dailyBriefLoading, setDailyBriefLoading] = useState(false);
+  const [dailyBriefError, setDailyBriefError] = useState('');
   const [openCards, setOpenCards] = useState<{ stock: boolean; process: boolean; microscope: boolean; audit: boolean; trend: boolean }>({
     stock: true,
-    process: false,
+    process: true,
     microscope: false,
     audit: false,
     trend: false,
@@ -116,7 +205,7 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
   const [renderVersion, setRenderVersion] = useState<string>('');
   const [pendingVersion, setPendingVersion] = useState<string>('');
   const [hasNewSnapshot, setHasNewSnapshot] = useState(false);
-  const [compactMode, setCompactMode] = useState(true);
+  const [compactMode] = useState(true);
   const [showSecondary, setShowSecondary] = useState(false);
   const pagePad = compactMode ? 8 : 12;
   const blockGap = compactMode ? 8 : 10;
@@ -139,9 +228,13 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
         entry: entryFilter || undefined,
         latest_only: stockWindowMode === 'latest' ? true : stockWindowMode === 'fixed' ? false : undefined,
         window_days: stockWindowMode === 'fixed' ? stockWindowDays : undefined,
-        signal_date: mainView === 'replay' && replaySignalDate ? replaySignalDate : undefined,
+        signal_date: mainView === 'replay' && replayDateLocked && replaySignalDate ? replaySignalDate : undefined,
         preferred_themes: selectedThemes,
         theme_mode: themeMode,
+      });
+      const wt = await api.getCupHandleLabWatchPool({
+        limit: 800,
+        signal_date: mainView === 'replay' && replayDateLocked && replaySignalDate ? replaySignalDate : undefined,
       });
       let al: CupHandleLabAlignmentResponse | null = null;
       try {
@@ -152,8 +245,10 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
       }
       let pc: CupHandleLabV4PoolCompareResponse | null = null;
       try {
+        setPoolCompareError('');
         pc = await api.getCupHandleLabV4PoolCompare({ date: poolCompareDate || undefined, persist: true });
-      } catch {
+      } catch (e: any) {
+        setPoolCompareError(e?.message || '新入池对比数据获取失败（请在“过程摊开”里点击“运行”重试）');
         pc = null;
       }
       setSummary(s);
@@ -162,14 +257,17 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
       setAudit(a);
       setAlignment(al);
       setPoolCompare(pc);
-      const stockItems = Array.isArray(st.items) ? st.items : [];
-      setStocks(stockItems);
+      setWatchItems(Array.isArray(wt.items) ? wt.items : []);
+      setWatchMeta(wt.meta || {});
       setEntryWindows(Array.isArray(st.entry_windows) ? st.entry_windows : []);
-      setStockMeta(st.meta || {});
-      setSelectedStockCode((prev) => {
-        if (prev && stockItems.some((x) => x.stock_code === prev)) return prev;
-        return stockItems[0]?.stock_code || '';
-      });
+      if (mainView === 'replay') {
+        setSelectedReplayStockCode((prev) => {
+          const p = normalizeStockCode(prev);
+          const rows = Array.isArray(wt.items) ? wt.items : [];
+          if (p && rows.some((x) => normalizeStockCode(x.stock_code) === p)) return p;
+          return normalizeStockCode(rows[0]?.stock_code || '');
+        });
+      }
       const v = String(s?.meta?.latest_hardened_version || '');
       setRenderVersion(v);
       setPendingVersion(v);
@@ -183,15 +281,18 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
 
   useEffect(() => {
     void loadAll();
-  }, [entryFilter, alignmentDate, poolCompareDate, themeMode, selectedThemes.join('|'), stockWindowMode, stockWindowDays, mainView, replaySignalDate]);
+  }, [entryFilter, alignmentDate, poolCompareDate, themeMode, selectedThemes.join('|'), stockWindowMode, stockWindowDays, mainView, replaySignalDate, replayDateLocked]);
 
   const runPoolCompare = async () => {
     setPoolCompareLoading(true);
     try {
+      setPoolCompareError('');
       const pc = await api.getCupHandleLabV4PoolCompare({ date: poolCompareDate || undefined, persist: true });
       setPoolCompare(pc);
     } catch (e: any) {
-      setError(e?.message || 'V4池内运行V4.2失败');
+      const msg = e?.message || '新入池对比计算失败';
+      setPoolCompareError(msg);
+      setError(msg);
     } finally {
       setPoolCompareLoading(false);
     }
@@ -234,90 +335,64 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
   const recentDaily = useMemo(() => daily.slice(0, compactMode ? 8 : 20), [daily, compactMode]);
   const topRules = useMemo(() => (audit?.rules || []).slice(0, 6), [audit]);
   const replayDates = useMemo(() => {
-    const metaDates = Array.isArray(stockMeta.available_signal_dates) ? stockMeta.available_signal_dates : [];
+    const metaDates = Array.isArray(watchMeta.available_signal_dates) ? watchMeta.available_signal_dates : [];
     if (metaDates.length) return metaDates.slice().sort().reverse();
-    const latest = String(stockMeta.latest_signal_date || '').trim();
+    const latest = String(watchMeta.latest_signal_date || '').trim();
     if (latest) return [latest];
     const s = new Set<string>();
-    stocks.forEach((x) => {
+    watchItems.forEach((x) => {
       const d = String(x.signal_date || '').trim();
       if (d) s.add(d);
     });
     return Array.from(s).sort().reverse();
-  }, [stocks, stockMeta.available_signal_dates]);
-  const replayStocksView = useMemo(() => {
-    return stocks;
-  }, [stocks]);
-  const selectedStock = useMemo(() => {
-    const base = mainView === 'replay' ? replayStocksView : stocks;
-    return base.find((s) => s.stock_code === selectedStockCode) || base[0] || null;
-  }, [mainView, replayStocksView, stocks, selectedStockCode]);
+  }, [watchItems, watchMeta.available_signal_dates, watchMeta.latest_signal_date]);
   const poolCompareView = useMemo<CupHandleLabV4PoolCompareResponse | null>(() => {
-    if (poolCompare) return poolCompare;
-    if (!stocks.length) return null;
-    const target = stockMeta.latest_signal_date || stocks[0]?.signal_date || '';
-    const hardened = stocks.slice(0, 120).map((x) => ({
-      signal_date: x.signal_date || target || '',
-      stock_code: x.stock_code,
-      stock_name: x.stock_name,
-      segment_id: (x.entries && x.entries[0] && x.entries[0].segment_id) || '',
-      dynamic_score: x.dynamic_score,
-      gate_count: 0,
-      route: (x.entries && x.entries[0] && x.entries[0].entry_id) || '',
-    }));
-    return {
-      meta: {
-        target_date: target,
-        requested_date: null,
-        latest_v4_run_date: null,
-        latest_trade_date: null,
-        fallback_to_effective_trade_date: false,
-        candidate_dates: [],
-        market_state: '',
-        route_cluster_id: '',
-        route_desc: '',
-        lab_mode: 'frontend_fallback_from_stocks',
-      },
-      counts: {
-        v4_count: 0,
-        v42_base_count: hardened.length,
-        v42_hardened_count: hardened.length,
-      },
-      ratios: {
-        base_vs_v4: 0,
-        hardened_vs_v4: 0,
-        hardened_vs_base: 1,
-      },
-      quality: {
-        label_spec: { strength: 0.04, drawdown: 0.03, up_days_min: 5 },
-        base_ready_n: 0,
-        base_success_n: 0,
-        base_success_rate: 0,
-        hard_ready_n: 0,
-        hard_success_n: 0,
-        hard_success_rate: 0,
-        delta_success_rate: 0,
-      },
-      process: {
-        route_miss: 0,
-        hard_fail: 0,
-        base_pass: hardened.length,
-        hard_pass: hardened.length,
-      },
-      samples: {
-        kept_top: [],
-        removed_top: [],
-      },
-      delivery_pool: {
-        limit: 240,
-        v4_today: [],
-        v42_base_today: hardened,
-        v42_hardened_today: hardened,
-      },
-      history_tail: [],
-      warnings: ['后端未返回 v4-pool-compare（当前为降级视图，仅展示V4.2候选交付池）'],
-    };
-  }, [poolCompare, stocks, stockMeta.latest_signal_date]);
+    return poolCompare;
+  }, [poolCompare]);
+  const replayStocksView = useMemo(() => {
+    const grouped = new Map<string, any>();
+    watchItems.forEach((it) => {
+      const code = normalizeStockCode(it.stock_code);
+      const d = String(it.signal_date || '').trim();
+      if (!code || !d) return;
+      const k = `${d}__${code}`;
+      const cur = grouped.get(k) || {
+        stock_code: code,
+        stock_name: it.stock_name || '',
+        signal_date: d,
+        entered_at: String(it.created_at || '').trim(),
+        dynamic_score: (typeof it.dynamic_score === 'number' ? it.dynamic_score : 0),
+        gate_count: (typeof it.gate_count === 'number' ? it.gate_count : 0),
+        segment_id: it.segment_id || '',
+        v42_pass: false,
+        is_success_strict: it.is_success_strict ?? null,
+        end_return_t8: it.end_return_t8 ?? null,
+        drawdown_mag_t1_t8: it.drawdown_mag_t1_t8 ?? null,
+      };
+      if (it.source_pool === 'hardened') cur.v42_pass = true;
+      const enteredAt = String(it.created_at || '').trim();
+      if (!cur.entered_at && enteredAt) cur.entered_at = enteredAt;
+      else if (enteredAt && cur.entered_at && enteredAt < cur.entered_at) cur.entered_at = enteredAt;
+      const score = typeof it.dynamic_score === 'number' ? it.dynamic_score : 0;
+      if (score >= Number(cur.dynamic_score || 0)) {
+        cur.dynamic_score = score;
+        cur.gate_count = typeof it.gate_count === 'number' ? it.gate_count : cur.gate_count;
+        cur.segment_id = it.segment_id || cur.segment_id;
+        cur.is_success_strict = it.is_success_strict ?? cur.is_success_strict;
+        cur.end_return_t8 = (it.end_return_t8 ?? cur.end_return_t8);
+        cur.drawdown_mag_t1_t8 = (it.drawdown_mag_t1_t8 ?? cur.drawdown_mag_t1_t8);
+      }
+      grouped.set(k, cur);
+    });
+    const items = Array.from(grouped.values());
+    items.sort((a, b) => {
+      if (a.signal_date !== b.signal_date) return String(b.signal_date).localeCompare(String(a.signal_date));
+      if ((b.v42_pass ? 1 : 0) !== (a.v42_pass ? 1 : 0)) return (b.v42_pass ? 1 : 0) - (a.v42_pass ? 1 : 0);
+      return Number(b.dynamic_score || 0) - Number(a.dynamic_score || 0);
+    });
+    return items;
+  }, [watchItems]);
+  const selectedStockCode = normalizeStockCode(mainView === 'replay' ? selectedReplayStockCode : selectedDeliveryStockCode);
   const sparkline = (values: number[], width = 140, height = 34): string => {
     if (!values.length) return '';
     const min = Math.min(...values);
@@ -362,45 +437,261 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
       v4: pv?.delivery_pool?.v4_today?.length || 0,
     };
   }, [poolCompareView]);
-  const replayCount = useMemo(() => replayStocksView.length, [replayStocksView]);
   const mainRows = useMemo(() => {
     if (mainView === 'replay') return replayStocksView;
     const pv = poolCompareView;
     if (!pv) return [];
-    if (deliveryView === 'v4') return pv.delivery_pool?.v4_today || [];
     return pv.delivery_pool?.v42_hardened_today || [];
-  }, [mainView, replayStocksView, poolCompareView, deliveryView]);
+  }, [mainView, replayStocksView, poolCompareView]);
+  const replayButtonCountLabel = String(replayStocksView.length);
+  const selectedRow = useMemo<any>(() => {
+    const rows = (mainRows as any[]) || [];
+    if (!rows.length) return null;
+    if (!selectedStockCode) return rows[0] || null;
+    const hit = rows.find((x: any) => normalizeStockCode(x?.stock_code) === selectedStockCode);
+    return hit || rows[0] || null;
+  }, [mainRows, selectedStockCode]);
+  const selectedDetail = useMemo(() => {
+    // Replay detail comes from normalized watch-pool rows.
+    if (mainView !== 'replay') return null;
+    const want = normalizeStockCode(selectedStockCode);
+    if (!want) return null;
+    return replayStocksView.find((s: any) => normalizeStockCode(s.stock_code) === want) || null;
+  }, [replayStocksView, selectedStockCode, mainView]);
+  const selectedStock = selectedRow;
+
+  const feedbackQ2Options: Array<{ id: string; label: string }> = useMemo(
+    () => [
+      { id: 'shape_quality', label: '形态质量不足（杯体/柄部不理想）' },
+      { id: 'volume_rhythm', label: '量价节奏不匹配（突破前后量能异常）' },
+      { id: 'market_state', label: '市场状态不匹配（当日环境不支持）' },
+      { id: 'sector_theme', label: '板块/主题一致性弱' },
+      { id: 'drawdown_risk', label: '回撤风险不可接受' },
+      { id: 'other_structural', label: '其他结构性风险' },
+    ],
+    []
+  );
+  const fbQ1Label = (v: string) => (v === 'should' ? '应该' : v === 'should_not' ? '不应该' : v === 'unsure' ? '不确定' : v || '-');
+  const fbQ3Label = (v: string) => {
+    if (v === 'shape') return '形态风险';
+    if (v === 'volume') return '量价风险';
+    if (v === 'market') return '市场状态风险';
+    if (v === 'sector') return '板块一致性风险';
+    if (v === 'risk_reward') return '风险收益比失衡';
+    return v || '-';
+  };
+  const fbQ4Label = (v: string) => (v === 't5' ? 'T+5' : v === 't8' ? 'T+8' : v === 't13' ? 'T+13' : v || '-');
+  const fbQ5Label = (v: string) => (v === 'low' ? '低(<=3%)' : v === 'mid' ? '中(3%~6%)' : v === 'high' ? '高(>6%)' : v || '-');
+
+  const loadFeedback = async (code: string) => {
+    const want = normalizeStockCode(code);
+    if (!want) {
+      setFeedbackItems([]);
+      return;
+    }
+    setFeedbackLoading(true);
+    setFeedbackError('');
+    try {
+      const r = await api.getCupHandleLabFeedback({ stock_code: want, limit: 10, offset: 0 });
+      setFeedbackItems(Array.isArray(r.items) ? r.items : []);
+    } catch (e: any) {
+      setFeedbackError(e?.message || '反馈列表加载失败');
+      setFeedbackItems([]);
+    } finally {
+      setFeedbackLoading(false);
+    }
+  };
+
+  const loadDailyBrief = async () => {
+    setDailyBriefLoading(true);
+    setDailyBriefError('');
+    try {
+      const reqDate = String(poolCompareDate || poolCompareView?.meta?.target_date || '').trim() || undefined;
+      const r = await api.getCupHandleLabDailyBrief({ date: reqDate });
+      setDailyBrief(r);
+    } catch (e: any) {
+      setDailyBrief(null);
+      setDailyBriefError(e?.message || '每日小结加载失败');
+    } finally {
+      setDailyBriefLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadFeedback(selectedStockCode);
+    // Reset form to sensible defaults per selected stock.
+    setFbQ1('unsure');
+    setFbQ2([]);
+    setFbQ3('');
+    setFbQ4('t8');
+    setFbQ5('mid');
+    setFbLastSubmitMsg('');
+  }, [selectedStockCode]);
+
+  useEffect(() => {
+    void loadDailyBrief();
+  }, [poolCompareDate, replaySignalDate, mainView]);
+
+  const submitFeedback = async () => {
+    const code = normalizeStockCode(selectedStockCode);
+    if (!code) return;
+    setFeedbackLoading(true);
+    setFeedbackError('');
+    setFbLastSubmitMsg('');
+    try {
+      const signalDate = String(
+        (selectedRow as any)?.signal_date ||
+        (selectedStock as any)?.signal_date ||
+        poolCompareView?.meta?.target_date ||
+        watchMeta.latest_signal_date ||
+        ''
+      ).trim();
+      await api.submitCupHandleLabFeedback({
+        stock_code: code,
+        stock_name: String((selectedStock as any)?.stock_name || (selectedRow as any)?.stock_name || '').trim() || undefined,
+        signal_date: signalDate || undefined,
+        main_view: mainView,
+        delivery_view: mainView === 'delivery' ? deliveryView : undefined,
+        q1_should_enter: fbQ1,
+        q2_reasons: fbQ2,
+        q3_primary_risk: fbQ3 || undefined,
+        q4_horizon: fbQ4,
+        q5_drawdown_tolerance: fbQ5,
+      });
+      setFbLastSubmitMsg('已提交');
+      await loadFeedback(code);
+    } catch (e: any) {
+      setFeedbackError(e?.message || '提交失败');
+    } finally {
+      setFeedbackLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (mainView !== 'replay') return;
+    const rows = replayStocksView;
     if (!replaySignalDate) {
-      const latest = String(stockMeta.latest_signal_date || '').trim();
+      const latest = String(watchMeta.latest_signal_date || '').trim();
       if (latest) setReplaySignalDate(latest);
       return;
     }
-    if (selectedStockCode && replayStocksView.some((x) => x.stock_code === selectedStockCode)) return;
-    setSelectedStockCode(replayStocksView[0]?.stock_code || '');
-  }, [mainView, replaySignalDate, replayStocksView, selectedStockCode, stockMeta.latest_signal_date]);
+    if (!rows.length) {
+      setSelectedReplayStockCode('');
+      return;
+    }
+    const cur = normalizeStockCode(selectedReplayStockCode);
+    if (cur && rows.some((x) => normalizeStockCode(x.stock_code) === cur)) return;
+    setSelectedReplayStockCode(normalizeStockCode(rows[0]?.stock_code || ''));
+  }, [mainView, replaySignalDate, replayStocksView, selectedReplayStockCode, watchMeta.latest_signal_date]);
+
+  useEffect(() => {
+    if (mainView !== 'delivery') return;
+    const rows = mainRows as any[];
+    if (!rows.length) {
+      setSelectedDeliveryStockCode('');
+      return;
+    }
+    const cur = normalizeStockCode(selectedDeliveryStockCode);
+    if (cur && rows.some((x: any) => normalizeStockCode(x?.stock_code) === cur)) return;
+    setSelectedDeliveryStockCode(normalizeStockCode(rows[0]?.stock_code || ''));
+  }, [mainView, mainRows, selectedDeliveryStockCode]);
 
   const sectorCounts = useMemo(() => {
     const m = new Map<string, number>();
     (mainRows as any[]).forEach((r: any) => {
+      if (mainView !== 'delivery') return;
       const k = String(r?.sector_lv1 || r?.sector_lv2 || '').trim();
       if (!k) return;
       m.set(k, (m.get(k) || 0) + 1);
     });
     return m;
-  }, [mainRows]);
+  }, [mainRows, mainView]);
 
   const workbench = (
-    <div style={{ display: 'grid', gridTemplateColumns: compactMode ? '1fr 360px' : '1fr 380px', gap: blockGap, marginBottom: blockGap }}>
+    <div style={{ display: 'grid', gridTemplateColumns: compactMode ? '61% 39%' : '61% 39%', gap: blockGap, marginBottom: blockGap }}>
 
       <section style={{ ...panel, padding: cardPad }}>
+        <div style={{ border: `1px solid ${c.border}`, borderRadius: 8, padding: '8px 10px', marginBottom: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+            <div style={{ color: c.accent, fontSize: 12, fontWeight: 900 }}>每日学习小结</div>
+            <div style={{ color: c.dim, fontSize: 11 }}>
+              {dailyBrief?.meta?.target_date || '-'} · 更新 {String(dailyBrief?.meta?.latest_updated_at || '-').replace('T', ' ').slice(0, 19)}
+            </div>
+          </div>
+          {!!dailyBriefError && <div style={{ color: c.warn, fontSize: 12, marginBottom: 6 }}>{dailyBriefError}</div>}
+          {dailyBriefLoading && !dailyBrief ? (
+            <div style={{ color: c.dim, fontSize: 12 }}>加载中...</div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
+              <div style={{ color: c.text, fontSize: 12 }}>
+                新入观察 {num(dailyBrief?.daily_action?.new_watch_n)} · 反馈处理 {num(dailyBrief?.daily_action?.feedback_processed_n)}
+              </div>
+              <div style={{ color: c.text, fontSize: 12 }}>
+                T+8 {pct(dailyBrief?.forward_summary?.t8_success_rate)}（{dailyBrief?.forward_summary?.t8_success_trend || '-'}）
+              </div>
+              <div style={{ color: c.text, fontSize: 12 }}>
+                收益均值 {pct(dailyBrief?.forward_summary?.avg_return_t8)} · 回撤均值 {pct(dailyBrief?.forward_summary?.avg_drawdown_t1_t8)}
+              </div>
+              <div style={{ color: c.dim, fontSize: 12 }}>
+                参数更新 {dailyBrief?.model_iteration?.param_update_n == null ? '待接入' : num(dailyBrief.model_iteration.param_update_n)} · 入口完善 {dailyBrief?.model_iteration?.entry_improve_pct == null ? '待接入' : pct(dailyBrief.model_iteration.entry_improve_pct)}
+              </div>
+              <div style={{ color: c.text, fontSize: 12 }}>
+                变更结论 {dailyBrief?.strategy_audit?.decision === 'keep' ? '保留' : dailyBrief?.strategy_audit?.decision === 'rollback' ? '回滚' : '继续观察'}
+                {' '}· Δ胜率 {typeof dailyBrief?.strategy_audit?.delta_success_rate_pp === 'number' ? `${dailyBrief.strategy_audit.delta_success_rate_pp >= 0 ? '+' : ''}${dailyBrief.strategy_audit.delta_success_rate_pp.toFixed(2)}pp` : '待补'}
+                {' '}· 样本 {dailyBrief?.strategy_audit?.ready_n ?? '-'} / {dailyBrief?.strategy_audit?.min_ready_n ?? 30}
+              </div>
+              <div style={{ color: c.dim, fontSize: 12 }}>
+                回撤闸门{' '}
+                <span
+                  title={String(dailyBrief?.strategy_audit?.decision_reason || '暂无判定说明')}
+                  style={{
+                    display: 'inline-block',
+                    borderRadius: 10,
+                    padding: '1px 8px',
+                    fontSize: 11,
+                    fontWeight: 800,
+                    border: `1px solid ${
+                      dailyBrief?.strategy_audit?.drawdown_gate_status === 'pass'
+                        ? c.good
+                        : dailyBrief?.strategy_audit?.drawdown_gate_status === 'fail'
+                        ? c.bad
+                        : c.border
+                    }`,
+                    color:
+                      dailyBrief?.strategy_audit?.drawdown_gate_status === 'pass'
+                        ? c.good
+                        : dailyBrief?.strategy_audit?.drawdown_gate_status === 'fail'
+                        ? c.bad
+                        : c.dim,
+                    background:
+                      dailyBrief?.strategy_audit?.drawdown_gate_status === 'pass'
+                        ? (isLight ? 'rgba(34,197,94,0.10)' : 'rgba(34,197,94,0.12)')
+                        : dailyBrief?.strategy_audit?.drawdown_gate_status === 'fail'
+                        ? (isLight ? 'rgba(239,68,68,0.10)' : 'rgba(239,68,68,0.12)')
+                        : 'transparent',
+                  }}
+                >
+                  {dailyBrief?.strategy_audit?.drawdown_gate_status === 'pass'
+                    ? '通过'
+                    : dailyBrief?.strategy_audit?.drawdown_gate_status === 'fail'
+                    ? '未通过'
+                    : '待补'}
+                </span>
+                {' '}· Δ回撤 {typeof dailyBrief?.strategy_audit?.drawdown_delta_pp === 'number' ? `${dailyBrief.strategy_audit.drawdown_delta_pp >= 0 ? '+' : ''}${dailyBrief.strategy_audit.drawdown_delta_pp.toFixed(2)}pp` : '待补'}
+                {' '}· 阈值 {typeof dailyBrief?.strategy_audit?.drawdown_threshold_pp === 'number' ? `<=${dailyBrief.strategy_audit.drawdown_threshold_pp.toFixed(2)}pp` : '待补'}
+              </div>
+              <div style={{ color: c.dim, fontSize: 11 }}>
+                判定说明：{dailyBrief?.strategy_audit?.decision_reason || '暂无判定说明'}
+              </div>
+            </div>
+          )}
+        </div>
+
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
-          <h3 style={{ ...sectionTitle, marginBottom: 0 }}>{mainView === 'delivery' ? '当日交付池' : '验证回放池'}</h3>
+          <h3 style={{ ...sectionTitle, marginBottom: 0 }}>{mainView === 'delivery' ? '新入池杯柄' : '跟踪观察池'}</h3>
           <button
             onClick={() => {
-              const td = poolCompareView?.meta?.target_date || stockMeta.latest_signal_date || 'unknown';
+              const td = poolCompareView?.meta?.target_date || watchMeta.latest_signal_date || 'unknown';
               if (mainView === 'delivery') {
                 exportRowsAsCsv(
                   `cup_lab_delivery_${deliveryView}_${td}.csv`,
@@ -429,10 +720,9 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
                     is_success_strict: x.is_success_strict,
                     end_return_t8: x.end_return_t8,
                     drawdown_mag_t1_t8: x.drawdown_mag_t1_t8,
-                    estimated_win_rate: x.estimated_win_rate,
+                    v42_pass: x.v42_pass ? 1 : 0,
                     dynamic_score: x.dynamic_score,
-                    sample_n: x.sample_n,
-                    entry_count: x.entry_count,
+                    gate_count: x.gate_count,
                   }))
                 );
               }
@@ -468,25 +758,49 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
               <tr style={{ background: c.tableHead, color: c.text }}>
                 <th style={{ textAlign: 'left', padding: 6 }}>代码</th>
                 <th style={{ textAlign: 'left', padding: 6 }}>名称</th>
-                <th style={{ textAlign: 'left', padding: 6 }}>板块</th>
+                {mainView === 'delivery' && <th style={{ textAlign: 'left', padding: 6 }}>板块</th>}
+                {mainView === 'replay' && <th style={{ textAlign: 'left', padding: 6 }}>入池时间</th>}
+                {mainView === 'replay' && <th style={{ textAlign: 'center', padding: 6 }}>V4.2/强化</th>}
                 {mainView === 'replay' && <th style={{ textAlign: 'center', padding: 6 }}>结果</th>}
-                <th style={{ textAlign: 'center', padding: 6 }}>历史胜出</th>
-                <th style={{ textAlign: 'right', padding: 6 }}>杯柄次数</th>
-                <th style={{ textAlign: 'right', padding: 6 }}>板块热度</th>
-                {mainView === 'replay' && <th style={{ textAlign: 'right', padding: 6 }}>估计胜率</th>}
-                <th style={{ textAlign: 'right', padding: 6 }}>{mainView === 'delivery' ? (deliveryView === 'v4' ? '门控' : '评分') : '评分'}</th>
+                {mainView === 'delivery' && <th style={{ textAlign: 'center', padding: 6 }}>历史胜出</th>}
+                {mainView === 'delivery' && <th style={{ textAlign: 'right', padding: 6 }}>杯柄次数</th>}
+                {mainView === 'delivery' && <th style={{ textAlign: 'right', padding: 6 }}>板块热度</th>}
+                <th style={{ textAlign: 'right', padding: 6 }}>评分</th>
               </tr>
             </thead>
             <tbody>
+              {!mainRows.length ? (
+                <tr style={{ borderTop: `1px solid ${c.border}` }}>
+                  <td style={{ padding: 10, color: c.dim }} colSpan={mainView === 'replay' ? 6 : 8}>
+                    {mainView === 'delivery'
+                      ? (poolCompareView
+                        ? '新入池暂无数据'
+                        : (poolCompareError || '新入池对比数据未加载：请在右侧“过程摊开”点击“运行”'))
+                      : '观察池暂无数据'}
+                  </td>
+                </tr>
+              ) : null}
               {(mainRows as any[]).map((r: any) => {
-                const code = String(r.stock_code || '');
-                const selected = code && selectedStock?.stock_code === code;
-                const scoreCell =
-                  mainView === 'delivery'
-                    ? (deliveryView === 'v4' ? num(r.gate_count) : Number(r.dynamic_score || 0).toFixed(2))
-                    : Number(r.dynamic_score || 0).toFixed(2);
-                const winCell = mainView === 'replay' ? pct(r.estimated_win_rate) : null;
+                const code = normalizeStockCode(r.stock_code);
+                const selected = code && normalizeStockCode(selectedStockCode) === code;
+                const scoreCell = Number(r.dynamic_score || 0).toFixed(2);
                 const succ = r.is_success_strict;
+                const v42Badge = mainView !== 'replay'
+                  ? null
+                  : (
+                    <span style={{
+                      color: r.v42_pass ? c.good : c.dim,
+                      border: `1px solid ${r.v42_pass ? c.good : c.border}`,
+                      borderRadius: 10,
+                      padding: '1px 8px',
+                      fontSize: 11,
+                      display: 'inline-block',
+                      fontWeight: 800,
+                      background: r.v42_pass ? (isLight ? 'rgba(34,197,94,0.10)' : 'rgba(34,197,94,0.12)') : 'transparent',
+                    }}>
+                      {r.v42_pass ? '通过' : '未通过'}
+                    </span>
+                  );
                 const resultBadge = mainView !== 'replay'
                   ? null
                   : (
@@ -504,7 +818,6 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
                     </span>
                   );
                 const sector = String(r?.sector_lv1 || r?.sector_lv2 || '-');
-                const sectorN = sector && sector !== '-' ? (sectorCounts.get(sector) || 0) : 0;
                 const histHas = r?.history_has_success;
                 const histBadge = (
                   <span style={{
@@ -523,38 +836,41 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
                 const cupN = Number(r?.history_cup_n || 0) || 0;
                 return (
                   <tr
-                    key={`${mainView}-${deliveryView}-${code}`}
-                    onClick={() => code && setSelectedStockCode(code)}
+                    key={`${mainView}-${r.signal_date || ''}-${code}`}
+                    onClick={() => {
+                      if (!code) return;
+                      if (mainView === 'replay') {
+                        setSelectedReplayStockCode(code);
+                      } else {
+                        setSelectedDeliveryStockCode(code);
+                      }
+                    }}
                     style={{ borderTop: `1px solid ${c.border}`, cursor: 'pointer', background: selected ? (isLight ? 'rgba(30,64,175,0.08)' : 'rgba(255,203,5,0.08)') : 'transparent' }}
                   >
                     <td style={{ padding: 6, color: c.text, whiteSpace: 'nowrap', fontFamily: 'monospace' }}>{code}</td>
                     <td style={{ padding: 6, color: c.text, whiteSpace: 'nowrap' }}>{r.stock_name || '-'}</td>
-                    <td style={{ padding: 6, color: c.dim, whiteSpace: 'nowrap' }}>{sector}</td>
+                    {mainView === 'delivery' && <td style={{ padding: 6, color: c.dim, whiteSpace: 'nowrap' }}>{sector}</td>}
+                    {mainView === 'replay' && <td style={{ padding: 6, color: c.dim, whiteSpace: 'nowrap' }}>{fmtDateTime(r.entered_at)}</td>}
+                    {mainView === 'replay' && <td style={{ padding: 6, textAlign: 'center' }}>{v42Badge}</td>}
                     {mainView === 'replay' && <td style={{ padding: 6, textAlign: 'center' }}>{resultBadge}</td>}
-                    <td style={{ padding: 6, textAlign: 'center' }}>{histBadge}</td>
-                    <td style={{ padding: 6, textAlign: 'right', color: c.text, fontWeight: 800 }}>{cupN || '-'}</td>
-                    <td style={{ padding: 6, textAlign: 'right', color: c.dim }}>{sectorN ? `${sectorN}` : '-'}</td>
-                    {mainView === 'replay' && <td style={{ padding: 6, color: c.good, textAlign: 'right', fontWeight: 800 }}>{winCell}</td>}
-                    <td style={{ padding: 6, color: mainView === 'delivery' && deliveryView !== 'v4' ? c.good : c.text, textAlign: 'right', fontWeight: 800 }}>{scoreCell}</td>
+                    {mainView === 'delivery' && <td style={{ padding: 6, textAlign: 'center' }}>{histBadge}</td>}
+                    {mainView === 'delivery' && <td style={{ padding: 6, textAlign: 'right', color: c.text, fontWeight: 800 }}>{cupN || '-'}</td>}
+                    {mainView === 'delivery' && (
+                      <td style={{ padding: 6, textAlign: 'right', color: c.dim, fontWeight: 800 }}>
+                        {(() => {
+                          const n = sectorCounts.get(sector) || 0;
+                          return n > 0 ? sectorHeatLabel(n) : '-';
+                        })()}
+                      </td>
+                    )}
+                    <td style={{ padding: 6, color: mainView === 'delivery' ? c.good : c.text, textAlign: 'right', fontWeight: 800 }}>{scoreCell}</td>
                   </tr>
                 );
               })}
               {!mainRows.length && (
                 <tr>
-                  <td style={{ padding: 8, color: c.warn, lineHeight: 1.5 }} colSpan={mainView === 'replay' ? 9 : 8}>
-                    {mainView === 'replay' && Number(stockMeta?.v42_candidate_rows_n || 0) > 0 && Number(stockMeta?.v42_rows_in_v4_n || 0) === 0
-                      ? (
-                        <>
-                          <div style={{ fontWeight: 800, color: c.warn }}>暂无数据（被 V4 基池硬约束过滤为空）</div>
-                          <div style={{ color: c.dim, fontSize: 11 }}>
-                            回放日期：{stockMeta?.latest_signal_date || '-'} · V4.2 候选行：{Number(stockMeta?.v42_candidate_rows_n || 0)} · 命中 V4：0 · V4 基池总量（窗口内累计）：{Number(stockMeta?.v4_pool_total_n || 0)}
-                          </div>
-                          <div style={{ color: c.dim, fontSize: 11 }}>
-                            说明：当前回放池来自标签可用的历史日期（如 2026-04-20），但 dashboard.db 中该日期可能没有完成的 V4 运行记录，因此无法做“V4.2 ⊆ V4”匹配，结果会显示为空。
-                          </div>
-                        </>
-                      )
-                      : '暂无数据'}
+                  <td style={{ padding: 8, color: c.warn, lineHeight: 1.5 }} colSpan={mainView === 'replay' ? 6 : 8}>
+                    暂无数据
                   </td>
                 </tr>
               )}
@@ -571,56 +887,288 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
           </div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
             <button
-              onClick={() => setMainView('delivery')}
+              onClick={() => {
+                setSelectedDeliveryStockCode('');
+                setMainView('delivery');
+              }}
               style={{ border: `1px solid ${mainView === 'delivery' ? c.accent : c.border}`, background: mainView === 'delivery' ? c.accent : 'transparent', color: mainView === 'delivery' ? (isLight ? '#fff' : '#050d1a') : c.dim, borderRadius: 999, padding: '2px 10px', cursor: 'pointer', fontSize: 12, fontWeight: 800 }}
             >
-              交付池 ({mainView === 'delivery' ? mainRows.length : (deliveryView === 'v4' ? deliveryCounts.v4 : deliveryCounts.hardened)})
+              新入池 ({mainView === 'delivery' ? mainRows.length : deliveryCounts.hardened})
             </button>
             <button
-              onClick={() => setMainView('replay')}
+              onClick={() => {
+                setSelectedReplayStockCode('');
+                setMainView('replay');
+              }}
               style={{ border: `1px solid ${mainView === 'replay' ? c.accent : c.border}`, background: mainView === 'replay' ? c.accent : 'transparent', color: mainView === 'replay' ? (isLight ? '#fff' : '#050d1a') : c.dim, borderRadius: 999, padding: '2px 10px', cursor: 'pointer', fontSize: 12, fontWeight: 800 }}
             >
-              回放池 ({replayCount})
+              观察池 ({replayButtonCountLabel})
             </button>
           </div>
+          <div style={{ color: c.dim, fontSize: 11, lineHeight: 1.5, marginBottom: 8 }}>
+            {mainView === 'delivery'
+              ? '关系：新入池杯柄=当日强化口径候选；基池口径仅在“杯柄池（基础→强化）比较”中查看。'
+              : '关系：跟踪观察池=按入池事件持久化累计（同股可多时段重复入池）；默认展示可用日期范围，锁定日期用于单日查询。'}
+          </div>
           {mainView === 'replay' && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <span style={{ color: c.dim, fontSize: 12 }}>有效日期</span>
-              <select
-                value={replaySignalDate}
-                onChange={(e) => setReplaySignalDate(e.target.value)}
-                style={{ background: isLight ? '#fff' : '#0f1f33', color: c.text, border: `1px solid ${c.border}`, borderRadius: 6, padding: '2px 8px', fontSize: 12, minWidth: 0, width: 170 }}
-              >
-                {replayDates.map((d) => (
-                  <option key={d} value={d}>{d}</option>
-                ))}
-              </select>
-            </div>
-          )}
-          {mainView === 'delivery' && (
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
-              <button
-                onClick={() => setDeliveryView('hardened')}
-                style={{ border: `1px solid ${deliveryView === 'hardened' ? c.accent : c.border}`, background: deliveryView === 'hardened' ? (isLight ? 'rgba(30,64,175,0.10)' : 'rgba(255,203,5,0.12)') : 'transparent', color: deliveryView === 'hardened' ? c.accent : c.dim, borderRadius: 999, padding: '2px 10px', cursor: 'pointer', fontSize: 11, fontWeight: 800 }}
-              >
-                V4.2加固 ({deliveryCounts.hardened})
-              </button>
-              <button
-                onClick={() => setDeliveryView('v4')}
-                style={{ border: `1px solid ${deliveryView === 'v4' ? c.accent : c.border}`, background: deliveryView === 'v4' ? (isLight ? 'rgba(30,64,175,0.10)' : 'rgba(255,203,5,0.12)') : 'transparent', color: deliveryView === 'v4' ? c.accent : c.dim, borderRadius: 999, padding: '2px 10px', cursor: 'pointer', fontSize: 11, fontWeight: 800 }}
-              >
-                V4基池 ({deliveryCounts.v4})
-              </button>
+            <div style={{ display: 'grid', gap: 8, marginBottom: 8 }}>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: c.text, fontSize: 12, cursor: 'pointer' }}>
+                <input type="checkbox" checked={replayDateLocked} onChange={(e) => setReplayDateLocked(e.target.checked)} />
+                <span>锁定日期查询</span>
+              </label>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                <span style={{ color: c.dim, fontSize: 12 }}>观察日期</span>
+                <input
+                  type="date"
+                  value={replaySignalDate}
+                  onChange={(e) => setReplaySignalDate(e.target.value)}
+                  disabled={!replayDateLocked}
+                  min={replayDates.length ? replayDates[replayDates.length - 1] : undefined}
+                  max={replayDates.length ? replayDates[0] : undefined}
+                  style={{ background: isLight ? '#fff' : '#0f1f33', color: c.text, border: `1px solid ${c.border}`, borderRadius: 6, padding: '2px 8px', fontSize: 12, minWidth: 0, width: 170, opacity: replayDateLocked ? 1 : 0.6 }}
+                />
+              </div>
             </div>
           )}
           <div style={{ color: c.dim, fontSize: 11, lineHeight: 1.5 }}>
-            日期 {poolCompareView?.meta?.target_date || stockMeta.latest_signal_date || '-'} · 回退 {poolCompareView?.meta?.fallback_to_effective_trade_date ? '是' : '否'} · 最新交易 {poolCompareView?.meta?.latest_trade_date || '-'}
+            日期 {poolCompareView?.meta?.target_date || watchMeta.latest_signal_date || '-'} · 回退 {poolCompareView?.meta?.fallback_to_effective_trade_date ? '是' : '否'} · 最新交易 {poolCompareView?.meta?.latest_trade_date || '-'}
           </div>
         </section>
 
-        <section style={{ ...panel, padding: cardPad }}>
-          <h3 style={{ ...sectionTitle, marginBottom: 8 }}>筛选与约束</h3>
-          <div style={{ display: 'grid', gap: 8 }}>
+        {CollapsibleCard({
+          title: '选中股票',
+          open: openCards.stock,
+          onToggle: () => setOpenCards((p) => ({ ...p, stock: !p.stock })),
+          badge: selectedStock?.stock_code || '',
+          children: selectedStock ? (
+            <>
+              <div style={{ color: c.text, fontSize: 13, fontWeight: 900, marginBottom: 6 }}>
+                {selectedStock.stock_code} {selectedStock.stock_name}
+              </div>
+              {mainView === 'delivery' && (
+                <div style={{ color: c.dim, fontSize: 12, marginBottom: 6, lineHeight: 1.5 }}>
+                  视图：新入池 · V4.2强化口径 · 日期 {selectedRow?.signal_date || poolCompareView?.meta?.target_date || '-'}
+                </div>
+              )}
+              <div style={{ color: c.dim, fontSize: 12, marginBottom: 6 }}>
+                {mainView === 'replay'
+                  ? (
+                    <>
+                      强化通过 {(selectedRow as any)?.v42_pass ? '是' : '否'} · 评分 {typeof selectedDetail?.dynamic_score === 'number' ? Number(selectedDetail.dynamic_score).toFixed(2) : '-'} · 形态 {segmentLabel(String((selectedDetail as any)?.segment_id || ''))}
+                    </>
+                  )
+                  : (
+                    <>
+                      评分 {typeof selectedRow?.dynamic_score === 'number' ? Number(selectedRow.dynamic_score).toFixed(2) : '-'} · 形态 {segmentLabel(String(selectedRow?.segment_id || ''))}
+                    </>
+                  )}
+              </div>
+              <div style={{ maxHeight: compactMode ? 320 : 380, overflow: 'auto', display: 'grid', gap: 6 }}>
+                {mainView === 'delivery' && (
+                  <div style={{ color: c.dim, fontSize: 12 }}>
+                    新入池杯柄仅展示当日候选结果，后续推进请在“跟踪观察池”查看。
+                  </div>
+                )}
+              </div>
+
+              <div style={{ marginTop: 10, borderTop: `1px dashed ${c.border}`, paddingTop: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <div style={{ color: c.accent, fontSize: 12, fontWeight: 900 }}>反馈问卷（误判归因）</div>
+                  <button
+                    onClick={() => void submitFeedback()}
+                    disabled={feedbackLoading || !selectedStockCode}
+                    style={{
+                      border: `1px solid ${c.accent}`,
+                      background: feedbackLoading ? 'transparent' : c.accent,
+                      color: feedbackLoading ? c.dim : (isLight ? '#fff' : '#050d1a'),
+                      borderRadius: 6,
+                      padding: '4px 10px',
+                      cursor: feedbackLoading ? 'not-allowed' : 'pointer',
+                      fontWeight: 900,
+                      fontSize: 12,
+                      opacity: feedbackLoading ? 0.75 : 1,
+                    }}
+                  >
+                    {feedbackLoading ? '提交中...' : '提交'}
+                  </button>
+                </div>
+                {!!feedbackError && <div style={{ color: c.warn, fontSize: 12, marginBottom: 8 }}>{feedbackError}</div>}
+                {!!fbLastSubmitMsg && <div style={{ color: c.good, fontSize: 12, marginBottom: 8 }}>{fbLastSubmitMsg}</div>}
+
+                <div style={{ display: 'grid', gap: 8 }}>
+                  <div style={{ border: `1px solid ${c.border}`, borderRadius: 8, padding: '8px 10px' }}>
+                    <div style={{ color: c.dim, fontSize: 12, marginBottom: 6 }}>Q1 这只股票应不应该进入强化池？</div>
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', color: c.text, fontSize: 12 }}>
+                      {[
+                        { v: 'should', t: '应该' },
+                        { v: 'should_not', t: '不应该' },
+                        { v: 'unsure', t: '不确定' },
+                      ].map((opt) => (
+                        <label key={opt.v} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                          <input type="radio" name="fb_q1" checked={fbQ1 === (opt.v as any)} onChange={() => setFbQ1(opt.v as any)} />
+                          <span>{opt.t}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={{ border: `1px solid ${c.border}`, borderRadius: 8, padding: '8px 10px' }}>
+                    <div style={{ color: c.dim, fontSize: 12, marginBottom: 6 }}>Q2 主要问题是什么？（可多选）</div>
+                    <div style={{ display: 'grid', gap: 6, color: c.text, fontSize: 12 }}>
+                      {feedbackQ2Options.map((opt) => {
+                        const on = fbQ2.includes(opt.id);
+                        return (
+                          <label key={opt.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                            <input
+                              type="checkbox"
+                              checked={on}
+                              onChange={() => setFbQ2((prev) => (prev.includes(opt.id) ? prev.filter((x) => x !== opt.id) : [...prev, opt.id]))}
+                            />
+                            <span>{opt.label}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div style={{ border: `1px solid ${c.border}`, borderRadius: 8, padding: '8px 10px' }}>
+                    <div style={{ color: c.dim, fontSize: 12, marginBottom: 6 }}>Q3 首要风险类型（单选）</div>
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', color: c.text, fontSize: 12 }}>
+                      {[
+                        { v: 'shape', t: '形态' },
+                        { v: 'volume', t: '量价' },
+                        { v: 'market', t: '市场状态' },
+                        { v: 'sector', t: '板块一致性' },
+                        { v: 'risk_reward', t: '风险收益比' },
+                      ].map((opt) => (
+                        <label key={opt.v} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                          <input type="radio" name="fb_q3" checked={fbQ3 === (opt.v as any)} onChange={() => setFbQ3(opt.v as any)} />
+                          <span>{opt.t}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={{ border: `1px solid ${c.border}`, borderRadius: 8, padding: '8px 10px' }}>
+                    <div style={{ color: c.dim, fontSize: 12, marginBottom: 6 }}>Q4 观察窗口（单选）</div>
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', color: c.text, fontSize: 12 }}>
+                      {[
+                        { v: 't5', t: 'T+5' },
+                        { v: 't8', t: 'T+8' },
+                        { v: 't13', t: 'T+13' },
+                      ].map((opt) => (
+                        <label key={opt.v} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                          <input type="radio" name="fb_q4" checked={fbQ4 === (opt.v as any)} onChange={() => setFbQ4(opt.v as any)} />
+                          <span>{opt.t}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={{ border: `1px solid ${c.border}`, borderRadius: 8, padding: '8px 10px' }}>
+                    <div style={{ color: c.dim, fontSize: 12, marginBottom: 6 }}>Q5 短期回撤容忍（单选）</div>
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', color: c.text, fontSize: 12 }}>
+                      {[
+                        { v: 'low', t: '低(<=3%)' },
+                        { v: 'mid', t: '中(3%~6%)' },
+                        { v: 'high', t: '高(>6%)' },
+                      ].map((opt) => (
+                        <label key={opt.v} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                          <input type="radio" name="fb_q5" checked={fbQ5 === (opt.v as any)} onChange={() => setFbQ5(opt.v as any)} />
+                          <span>{opt.t}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={{ border: `1px solid ${c.border}`, borderRadius: 8, padding: '8px 10px' }}>
+                    <div style={{ color: c.dim, fontSize: 12, marginBottom: 6 }}>最近反馈</div>
+                    {!feedbackItems.length ? (
+                      <div style={{ color: c.dim, fontSize: 12 }}>{feedbackLoading ? '加载中...' : '暂无反馈'}</div>
+                    ) : (
+                      <div style={{ display: 'grid', gap: 6 }}>
+                        {feedbackItems.slice(0, 6).map((it) => (
+                          <div key={it.id} style={{ border: `1px solid ${c.border}`, borderRadius: 6, padding: '6px 8px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, color: c.text, fontSize: 12, fontWeight: 800 }}>
+                              <span>{it.created_at?.slice?.(0, 16) || it.created_at}</span>
+                              <span>{fbQ1Label(String(it.q1_should_enter || ''))}</span>
+                            </div>
+                            <div style={{ color: c.dim, fontSize: 11, lineHeight: 1.5 }}>
+                              风险 {fbQ3Label(String(it.q3_primary_risk || ''))} · 窗口 {fbQ4Label(String(it.q4_horizon || ''))} · 回撤 {fbQ5Label(String(it.q5_drawdown_tolerance || ''))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div style={{ color: c.dim, fontSize: 12 }}>请选择中间主表中的股票</div>
+          ),
+        })}
+
+        {CollapsibleCard({
+          title: '杯柄池（基础→强化）比较',
+          open: openCards.process,
+          onToggle: () => setOpenCards((p) => ({ ...p, process: !p.process })),
+          badge: poolCompareLoading ? '运行中' : (poolCompareView ? '已加载' : '缺失'),
+          children: (
+            <>
+              {!!poolCompareError && (
+                <div style={{ marginBottom: 8, color: c.warn, fontSize: 12, fontWeight: 900 }}>
+                  {poolCompareError}
+                </div>
+              )}
+              <div style={{ color: c.dim, fontSize: 12, marginBottom: 8 }}>
+                操作入口已上移到页面顶部：选择“比较基准日”并点击“运行”。
+              </div>
+              <div style={{ border: `1px solid ${c.border}`, borderRadius: 8, padding: '8px 10px', marginBottom: 8 }}>
+                <div style={{ color: c.accent, fontSize: 12, fontWeight: 800, marginBottom: 4 }}>核心三问</div>
+                <div style={{ color: c.text, fontSize: 12, lineHeight: 1.6 }}>
+                  1. 今日路由：{stateLabel(poolCompareView?.meta?.market_state || '')} · {ruleToZh(poolCompareView?.meta?.route_desc || '') || '-'}
+                </div>
+                <div style={{ color: c.text, fontSize: 12, lineHeight: 1.6 }}>
+                  2. 数量变化：V4 {num(poolCompareView?.counts?.v4_count)} → 基础 {num(poolCompareView?.counts?.v42_base_count)} → 强化 {num(poolCompareView?.counts?.v42_hardened_count)}
+                </div>
+                <div style={{ color: c.text, fontSize: 12, lineHeight: 1.6 }}>
+                  3. 质量变化：基池 {pct(poolCompareView?.quality?.base_success_rate)} → 强化 {pct(poolCompareView?.quality?.hard_success_rate)} · Δ {poolCompareView?.quality?.delta_success_rate == null ? '-' : `${poolCompareView.quality.delta_success_rate >= 0 ? '+' : ''}${(poolCompareView.quality.delta_success_rate * 100).toFixed(2)}pp`}
+                </div>
+                <div style={{ color: c.dim, fontSize: 11, lineHeight: 1.6 }}>
+                  可验证样本：基池 {num(poolCompareView?.quality?.base_ready_n)} · 强化 {num(poolCompareView?.quality?.hard_ready_n)}
+                </div>
+              </div>
+              <div style={{ color: c.dim, fontSize: 11, lineHeight: 1.6 }}>
+                口径：杯宽(天)=右沿-左沿；杯深=(左沿-杯底)/左沿；成交额比(升/跌)=上涨段成交额/下跌段成交额
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8, marginTop: 8 }}>
+                <div style={{ border: `1px solid ${c.border}`, borderRadius: 8, padding: '6px 8px' }}>
+                  <div style={{ color: c.dim, fontSize: 11 }}>V4</div>
+                  <div style={{ color: c.text, fontSize: 16, fontWeight: 900 }}>{num(poolCompareView?.counts?.v4_count)}</div>
+                </div>
+                <div style={{ border: `1px solid ${c.border}`, borderRadius: 8, padding: '6px 8px' }}>
+                  <div style={{ color: c.dim, fontSize: 11 }}>V4.2基础池</div>
+                  <div style={{ color: c.text, fontSize: 16, fontWeight: 900 }}>{num(poolCompareView?.counts?.v42_base_count)}</div>
+                </div>
+                <div style={{ border: `1px solid ${c.border}`, borderRadius: 8, padding: '6px 8px' }}>
+                  <div style={{ color: c.dim, fontSize: 11 }}>V4.2强化池</div>
+                  <div style={{ color: c.accent, fontSize: 16, fontWeight: 900 }}>{num(poolCompareView?.counts?.v42_hardened_count)}</div>
+                </div>
+              </div>
+              {!!poolCompareView?.warnings?.length && (
+                <div style={{ marginTop: 8, color: c.warn, fontSize: 12, fontWeight: 900 }}>
+                  {poolCompareView.warnings.join(' | ')}
+                </div>
+              )}
+            </>
+          ),
+        })}
+
+        {showSecondary && (
+          <section style={{ ...panel, padding: cardPad }}>
+            <h3 style={{ ...sectionTitle, marginBottom: 8 }}>筛选与约束</h3>
+            <div style={{ display: 'grid', gap: 8 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
               <span style={{ color: c.dim, fontSize: 12 }}>入口</span>
               <select
@@ -631,7 +1179,7 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
                 <option value="">全部入口</option>
                 {entryWindows.map((w) => (
                   <option key={w.entry_id} value={w.entry_id}>
-                    {w.entry_id} ({w.pick_n})
+                    {ruleToZh(w.entry_desc || '') || entryIdLabelFallback(w.entry_id)} ({w.pick_n})
                   </option>
                 ))}
               </select>
@@ -699,102 +1247,11 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
                 })}
               </div>
             )}
-          </div>
-        </section>
+            </div>
+          </section>
+        )}
 
-        {CollapsibleCard({
-          title: '选中股票',
-          open: openCards.stock,
-          onToggle: () => setOpenCards((p) => ({ ...p, stock: !p.stock })),
-          badge: selectedStock?.stock_code || '',
-          children: selectedStock ? (
-            <>
-              <div style={{ color: c.text, fontSize: 13, fontWeight: 900, marginBottom: 6 }}>
-                {selectedStock.stock_code} {selectedStock.stock_name}
-              </div>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
-                {(selectedStock.reason_tags || []).map((t) => (
-                  <span key={t} style={{ fontSize: 11, border: `1px solid ${c.border}`, borderRadius: 999, padding: '2px 8px', color: c.text, background: isLight ? 'rgba(30,64,175,0.07)' : 'rgba(255,255,255,0.04)' }}>
-                    {t}
-                  </span>
-                ))}
-                {(selectedStock.matched_themes || []).map((t) => (
-                  <span key={`theme-${t}`} style={{ fontSize: 11, border: `1px solid ${c.accent}`, borderRadius: 999, padding: '2px 8px', color: c.accent, background: isLight ? 'rgba(30,64,175,0.12)' : 'rgba(255,203,5,0.12)' }}>
-                    主题:{t}
-                  </span>
-                ))}
-              </div>
-              <div style={{ color: c.dim, fontSize: 12, marginBottom: 6 }}>
-                估计胜率 {pct(selectedStock.estimated_win_rate)} · 动态评分 {selectedStock.dynamic_score.toFixed(2)} · 形态 {segmentLabel((selectedStock.entries && selectedStock.entries[0] && selectedStock.entries[0].segment_id) || '')}
-              </div>
-              <div style={{ maxHeight: compactMode ? 320 : 380, overflow: 'auto', display: 'grid', gap: 6 }}>
-                {(selectedStock.entries || []).slice(0, compactMode ? 8 : 12).map((e, idx) => (
-                  <div key={`${e.entry_id}-${idx}`} style={{ border: `1px solid ${c.border}`, borderRadius: 6, padding: '6px 8px' }}>
-                    <div style={{ color: c.text, fontSize: 12, fontWeight: 900 }}>{e.entry_id}</div>
-                    <div style={{ color: c.dim, fontSize: 11 }}>
-                      {stateLabel(e.market_state)} · {e.segment_id || '-'} · 胜率估计 {pct(e.estimated_win_rate)}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </>
-          ) : (
-            <div style={{ color: c.dim, fontSize: 12 }}>请选择中间主表中的股票</div>
-          ),
-        })}
-
-        {CollapsibleCard({
-          title: '过程摊开',
-          open: openCards.process,
-          onToggle: () => setOpenCards((p) => ({ ...p, process: !p.process })),
-          badge: poolCompareView?.meta?.lab_mode === 'frontend_fallback_from_stocks' ? '降级' : '对比',
-          children: (
-            <>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-                {!!poolCompareView?.meta?.candidate_dates?.length ? (
-                  <select
-                    value={poolCompareDate}
-                    onChange={(e) => setPoolCompareDate(e.target.value)}
-                    style={{ background: isLight ? '#fff' : '#0f1f33', color: c.text, border: `1px solid ${c.border}`, borderRadius: 6, padding: '2px 8px', fontSize: 12 }}
-                  >
-                    <option value="">最新V4完成日</option>
-                    {(poolCompareView.meta.candidate_dates || []).slice().reverse().map((d) => (
-                      <option key={d} value={d}>{d}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <span style={{ color: c.dim, fontSize: 12 }}>日期 {poolCompareView?.meta?.target_date || '-'}</span>
-                )}
-                <button
-                  onClick={() => void runPoolCompare()}
-                  style={{ border: `1px solid ${c.accent}`, background: c.accent, color: isLight ? '#fff' : '#050d1a', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontWeight: 900, fontSize: 12 }}
-                >
-                  {poolCompareLoading ? '运行中...' : '运行对比'}
-                </button>
-              </div>
-              <div style={{ color: c.dim, fontSize: 11, lineHeight: 1.6 }}>
-                日期 {poolCompareView?.meta?.target_date || '-'} · 市场状态 {stateLabel(poolCompareView?.meta?.market_state || '')} · 路由 {poolCompareView?.meta?.route_cluster_id || '-'}
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, marginTop: 8 }}>
-                <div style={{ border: `1px solid ${c.border}`, borderRadius: 8, padding: '6px 8px' }}>
-                  <div style={{ color: c.dim, fontSize: 11 }}>V4</div>
-                  <div style={{ color: c.text, fontSize: 16, fontWeight: 900 }}>{num(poolCompareView?.counts?.v4_count)}</div>
-                </div>
-                <div style={{ border: `1px solid ${c.border}`, borderRadius: 8, padding: '6px 8px' }}>
-                  <div style={{ color: c.dim, fontSize: 11 }}>V4.2 Hardened</div>
-                  <div style={{ color: c.accent, fontSize: 16, fontWeight: 900 }}>{num(poolCompareView?.counts?.v42_hardened_count)}</div>
-                </div>
-              </div>
-              {!!poolCompareView?.warnings?.length && (
-                <div style={{ marginTop: 8, color: c.warn, fontSize: 12, fontWeight: 900 }}>
-                  {poolCompareView.warnings.join(' | ')}
-                </div>
-              )}
-            </>
-          ),
-        })}
-
-        {CollapsibleCard({
+        {showSecondary && CollapsibleCard({
           title: '显微镜对照',
           open: openCards.microscope,
           onToggle: () => setOpenCards((p) => ({ ...p, microscope: !p.microscope })),
@@ -812,7 +1269,7 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
                     <option value="">最近有效同日</option>
                     {(alignment.meta.candidate_dates || []).slice().reverse().map((d) => (
                       <option key={d.date} value={d.date}>
-                        {d.date} | V4 {d.v4_count} | H {d.v42_hardened_count}
+                        {d.date} | V4 {d.v4_count} | 强化 {d.v42_hardened_count}
                       </option>
                     ))}
                   </select>
@@ -820,7 +1277,7 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
                 <div style={{ border: `1px solid ${c.border}`, borderRadius: 8, padding: '6px 8px' }}>
-                  <div style={{ color: c.dim, fontSize: 11 }}>H/V4</div>
+                  <div style={{ color: c.dim, fontSize: 11 }}>强化/V4</div>
                   <div style={{ color: c.text, fontSize: 16, fontWeight: 900 }}>{pct(alignment.ratios.hardened_vs_v4)}</div>
                 </div>
                 <div style={{ border: `1px solid ${c.border}`, borderRadius: 8, padding: '6px 8px' }}>
@@ -841,7 +1298,7 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
           ),
         })}
 
-        {CollapsibleCard({
+        {showSecondary && CollapsibleCard({
           title: '规则审计',
           open: openCards.audit,
           onToggle: () => setOpenCards((p) => ({ ...p, audit: !p.audit })),
@@ -861,7 +1318,7 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
           ),
         })}
 
-        {CollapsibleCard({
+        {showSecondary && CollapsibleCard({
           title: '趋势与回放',
           open: openCards.trend,
           onToggle: () => setOpenCards((p) => ({ ...p, trend: !p.trend })),
@@ -920,7 +1377,7 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
       { id: '01', name: '输入层', detail: 'V4 候选池 + 市场状态分型', tint: isLight ? 'rgba(30,64,175,0.10)' : 'rgba(255,203,5,0.10)' },
       { id: '02', name: '过滤层', detail: '形态/量价/节奏基础条件 + 白名单门槛', tint: isLight ? 'rgba(2,132,199,0.10)' : 'rgba(0,212,255,0.10)' },
       { id: '03', name: '匹配层', detail: '按 S1/S2/S3 动态路由到不同强化策略', tint: isLight ? 'rgba(34,197,94,0.10)' : 'rgba(34,197,94,0.12)' },
-      { id: '04', name: '学习层', detail: '回放复盘 base vs hardened 差异，持续迭代', tint: isLight ? 'rgba(245,158,11,0.12)' : 'rgba(245,158,11,0.14)' },
+      { id: '04', name: '学习层', detail: '回放复盘 基池 vs 强化池 差异，持续迭代', tint: isLight ? 'rgba(245,158,11,0.12)' : 'rgba(245,158,11,0.14)' },
     ],
     [isLight]
   );
@@ -951,48 +1408,25 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div style={{ color: c.accent, fontSize: 13, fontWeight: 900, letterSpacing: '0.06em' }}>CUP HANDLE LAB</div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <div
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                border: `1px solid ${c.border}`,
-                borderRadius: 999,
-                padding: 2,
-                background: isLight ? 'rgba(255,255,255,0.72)' : 'rgba(255,255,255,0.04)',
-                boxShadow: isLight ? 'inset 0 1px 0 rgba(255,255,255,0.9)' : 'inset 0 1px 0 rgba(255,255,255,0.06)',
-              }}
+            {(poolCompareView?.meta?.candidate_dates?.length || 0) > 0 && (
+              <select
+                value={poolCompareDate}
+                onChange={(e) => setPoolCompareDate(e.target.value)}
+                style={{ background: isLight ? '#fff' : '#0f1f33', color: c.text, border: `1px solid ${c.border}`, borderRadius: 6, padding: '2px 8px', fontSize: 12 }}
+                title="比较基准日（影响V4基池与V4.2强化池）"
+              >
+                <option value="">比较基准日：最新V4完成日</option>
+                {(poolCompareView?.meta?.candidate_dates || []).slice().reverse().map((d) => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
+              </select>
+            )}
+            <button
+              onClick={() => void runPoolCompare()}
+              style={{ border: `1px solid ${c.accent}`, background: c.accent, color: isLight ? '#fff' : '#050d1a', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontWeight: 900, fontSize: 12 }}
             >
-              <button
-                onClick={() => setCompactMode(false)}
-                style={{
-                  border: 'none',
-                  borderRadius: 999,
-                  padding: '4px 10px',
-                  cursor: 'pointer',
-                  fontWeight: 700,
-                  fontSize: 12,
-                  color: compactMode ? c.dim : (isLight ? '#fff' : '#050d1a'),
-                  background: compactMode ? 'transparent' : c.accent,
-                }}
-              >
-                标准
-              </button>
-              <button
-                onClick={() => setCompactMode(true)}
-                style={{
-                  border: 'none',
-                  borderRadius: 999,
-                  padding: '4px 10px',
-                  cursor: 'pointer',
-                  fontWeight: 700,
-                  fontSize: 12,
-                  color: compactMode ? (isLight ? '#fff' : '#050d1a') : c.dim,
-                  background: compactMode ? c.accent : 'transparent',
-                }}
-              >
-                简洁
-              </button>
-            </div>
+              {poolCompareLoading ? '运行中...' : '运行'}
+            </button>
             <button
               onClick={() => void loadAll()}
               style={{ border: `1px solid ${c.accent}`, background: c.accent, color: isLight ? '#fff' : '#050d1a', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontWeight: 700 }}
@@ -1119,7 +1553,7 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
       {showSecondary && (
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: blockGap, marginBottom: blockGap }}>
         <div style={{ ...panel, padding: cardPad }}>
-          <div style={{ color: c.dim, fontSize: 12 }}>当前胜率（Hardened）</div>
+          <div style={{ color: c.dim, fontSize: 12 }}>当前胜率（强化池）</div>
           <div style={{ color: c.good, fontSize: 24, fontWeight: 700 }}>{pct(summary?.quality?.hardened_success_rate)}</div>
           <div style={{ color: c.dim, fontSize: 12 }}>样本 {num(summary?.quality?.hardened_pick_n)} / 命中 {num(summary?.quality?.hardened_success_n)}</div>
         </div>
@@ -1188,8 +1622,10 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
                 <tr style={{ background: c.tableHead, color: c.text }}>
                   <th style={{ textAlign: 'left', padding: 6 }}>日期</th>
                   <th style={{ textAlign: 'left', padding: 6 }}>状态</th>
+                  <th style={{ textAlign: 'left', padding: 6 }}>簇</th>
                   <th style={{ textAlign: 'right', padding: 6 }}>样本</th>
                   <th style={{ textAlign: 'right', padding: 6 }}>胜率</th>
+                  <th style={{ textAlign: 'right', padding: 6 }}>均值评分</th>
                   <th style={{ textAlign: 'right', padding: 6 }}>均值收益</th>
                 </tr>
               </thead>
@@ -1198,28 +1634,31 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
                   <tr key={`${r.signal_date}-${idx}`} style={{ borderTop: `1px solid ${c.border}` }}>
                     <td style={{ padding: 6, color: c.text }}>{r.signal_date}</td>
                     <td style={{ padding: 6, color: c.dim }}>{stateLabel(r.market_state)}</td>
+                    <td style={{ padding: 6, color: c.dim }} title={String(r.cluster_desc || '')}>{ruleToZh(String(r.cluster_desc || '')) || '-'}</td>
                     <td style={{ padding: 6, color: c.text, textAlign: 'right' }}>{r.pick_n}</td>
                     <td style={{ padding: 6, color: c.good, textAlign: 'right' }}>{pct(r.success_rate)}</td>
+                    <td style={{ padding: 6, color: c.text, textAlign: 'right', fontWeight: 800 }}>{Number(r.avg_dynamic_score || 0).toFixed(2)}</td>
                     <td style={{ padding: 6, color: r.avg_end_return_t8 >= 0 ? c.good : c.bad, textAlign: 'right' }}>{pct(r.avg_end_return_t8)}</td>
                   </tr>
                 ))}
                 {!recentDaily.length && (
-                  <tr><td style={{ padding: 6, color: c.dim }} colSpan={5}>暂无数据</td></tr>
+                  <tr><td style={{ padding: 6, color: c.dim }} colSpan={7}>暂无数据</td></tr>
                 )}
               </tbody>
             </table>
           </div>
         </section>
         <section style={{ ...panel, padding: cardPad }}>
-          <h3 style={sectionTitle}>Base vs Hardened 日差异</h3>
+          <h3 style={sectionTitle}>基池 vs 强化池 日差异</h3>
           <div style={{ overflow: 'auto', maxHeight: tableMaxHeight }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr style={{ background: c.tableHead, color: c.text }}>
                   <th style={{ textAlign: 'left', padding: 6 }}>日期</th>
-                  <th style={{ textAlign: 'right', padding: 6 }}>Base</th>
-                  <th style={{ textAlign: 'right', padding: 6 }}>Hard</th>
+                  <th style={{ textAlign: 'right', padding: 6 }}>基池</th>
+                  <th style={{ textAlign: 'right', padding: 6 }}>强化池</th>
                   <th style={{ textAlign: 'right', padding: 6 }}>Δ胜率</th>
+                  <th style={{ textAlign: 'right', padding: 6 }}>新增</th>
                   <th style={{ textAlign: 'right', padding: 6 }}>移除</th>
                 </tr>
               </thead>
@@ -1234,12 +1673,13 @@ export default function CupHandleLab({ theme = 'dark' }: CupHandleLabProps) {
                       <td style={{ padding: 6, color: delta >= 0 ? c.good : c.bad, textAlign: 'right' }}>
                         {`${delta >= 0 ? '+' : ''}${(delta * 100).toFixed(2)}pp`}
                       </td>
+                      <td style={{ padding: 6, color: c.dim, textAlign: 'right' }}>{r.added_n}</td>
                       <td style={{ padding: 6, color: c.dim, textAlign: 'right' }}>{r.removed_n}</td>
                     </tr>
                   );
                 })}
                 {!recentDiff.length && (
-                  <tr><td style={{ padding: 6, color: c.dim }} colSpan={5}>暂无数据</td></tr>
+                  <tr><td style={{ padding: 6, color: c.dim }} colSpan={6}>暂无数据</td></tr>
                 )}
               </tbody>
             </table>

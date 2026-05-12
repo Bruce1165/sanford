@@ -256,6 +256,12 @@ function formatDateOnly(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
+function formatDateTimeText(raw: string | null | undefined): string {
+  const s = String(raw || '').trim();
+  if (!s) return '—';
+  return s.replace('T', ' ').slice(0, 19);
+}
+
 function shiftDate(dateStr: string, days: number): string {
   const d = new Date(`${dateStr}T00:00:00`);
   if (Number.isNaN(d.getTime())) return dateStr;
@@ -356,18 +362,25 @@ async function fetchJson<T>(url: string, init?: RequestInit, timeoutMs = 12000):
 export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 'light' }) {
   const isLight = theme === 'light';
   const palette = {
-    pageBg: isLight ? '#f4f7fb' : '#0a0f1e',
-    panelBg: isLight ? '#ffffff' : '#111827',
-    text: isLight ? '#0f172a' : '#e5e7eb',
-    dimText: isLight ? '#334155' : '#9ca3af',
-    border: isLight ? '#dbe3ef' : '#1e2d3d',
-    inputBg: isLight ? '#ffffff' : '#0f172a',
+    pageBg: isLight ? '#f5f7fb' : '#0a0e1a',
+    panelBg: isLight ? '#ffffff' : '#0a0e1a',
+    text: isLight ? '#0f172a' : '#d7e2ef',
+    dimText: isLight ? '#475569' : '#9fb3c8',
+    border: isLight ? '#d8e1ee' : '#1e2d45',
+    inputBg: isLight ? '#ffffff' : '#0f1f33',
     inputBorder: isLight ? '#cbd5e1' : '#334155',
-    activeRowBg: isLight ? 'rgba(37,99,235,0.08)' : 'rgba(255,203,5,0.08)',
-    badge: isLight ? '#1e40af' : '#93c5fd',
+    activeRowBg: isLight ? 'rgba(30,64,175,0.08)' : 'rgba(255,203,5,0.08)',
+    badge: isLight ? '#1d4ed8' : '#93c5fd',
     warnBg: isLight ? 'rgba(220,38,38,0.08)' : 'rgba(239,68,68,0.1)',
     warnText: isLight ? '#b91c1c' : '#fca5a5',
-    title: isLight ? '#1e40af' : '#FFCB05',
+    title: isLight ? '#1d4ed8' : '#FFCB05',
+    good: '#22c55e',
+    bad: '#ef4444',
+    warn: '#f59e0b',
+    missDot: isLight ? '#94a3b8' : '#64748b',
+    missDotBorder: isLight ? '#64748b' : '#475569',
+    gridMissBorder: isLight ? '#94a3b8' : '#64748b',
+    gridMissBg: isLight ? '#e2e8f0' : '#475569',
   };
   const compactControl: React.CSSProperties = {
     width: 'auto',
@@ -823,6 +836,17 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
   }, [poolStocks, selectedStock]);
 
   const latestRun = liveRun || runs[0] || null;
+  const lastUploadTime = useMemo(() => {
+    const items = cronLogs?.items || [];
+    let best = '';
+    items.forEach((item) => {
+      if (item.source !== 'pool_upload') return;
+      const t = String(item.completed_at || item.requested_at || '').trim();
+      if (!t) return;
+      if (!best || t > best) best = t;
+    });
+    return best;
+  }, [cronLogs?.items]);
   const stockOptions = useMemo(() => {
     return (poolStocks || []).map((item) => ({
       code: item.stock_code,
@@ -978,11 +1002,11 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
 
   const statusColor = useMemo(() => {
     const st = latestRun?.status || health?.status || 'unknown';
-    if (st === 'running') return '#f59e0b';
-    if (st === 'completed' || st === 'healthy') return '#22c55e';
-    if (st === 'failed' || st === 'critical') return '#ef4444';
-    return '#9ca3af';
-  }, [latestRun?.status, health?.status]);
+    if (st === 'running') return palette.warn;
+    if (st === 'completed' || st === 'healthy') return palette.good;
+    if (st === 'failed' || st === 'critical') return palette.bad;
+    return palette.dimText;
+  }, [latestRun?.status, health?.status, palette.warn, palette.good, palette.bad, palette.dimText]);
 
   const selectedStockMeta = useMemo(
     () => stockOptions.find((item) => item.code === selectedStock) || null,
@@ -1437,6 +1461,9 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
           >
             {showUploadHelp ? '收起上传说明' : '上传说明'}
           </button>
+          <span style={{ fontSize: 11, color: palette.dimText, whiteSpace: 'nowrap' }}>
+            上次上传时间：{formatDateTimeText(lastUploadTime)}
+          </span>
         </div>
         {showUploadHelp && (
           <div style={{ marginTop: 6, fontSize: 11, color: palette.dimText }}>
@@ -1603,8 +1630,8 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
                                   width: 9,
                                   height: 9,
                                   borderRadius: 999,
-                                  background: item.hasHits ? '#22c55e' : '#94a3b8',
-                                  border: item.hasHits ? '1px solid #166534' : '1px solid #475569',
+                                  background: item.hasHits ? palette.good : palette.missDot,
+                                  border: item.hasHits ? `1px solid ${isLight ? '#166534' : '#22c55e'}` : `1px solid ${palette.missDotBorder}`,
                                   boxShadow: item.hasHits ? '0 0 0 2px rgba(34,197,94,0.28)' : 'none',
                                   display: 'inline-block',
                                   flexShrink: 0,
@@ -1617,7 +1644,7 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
                                 style={{
                                   marginLeft: 8,
                                   fontSize: 10,
-                                  color: item.hasHits ? '#22c55e' : palette.dimText,
+                                  color: item.hasHits ? palette.good : palette.dimText,
                                   fontWeight: item.hasHits ? 700 : 500,
                                 }}
                               >
@@ -1826,12 +1853,12 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
                             borderRadius: 999,
                             border: `1px solid ${
                               isHit
-                                ? (inCurrentWindow ? '#f59e0b' : '#93c5fd')
-                                : (inCurrentWindow ? '#6b7280' : '#475569')
+                                ? (inCurrentWindow ? palette.warn : palette.badge)
+                                : (inCurrentWindow ? palette.dimText : palette.missDotBorder)
                             }`,
                             background: isHit
-                              ? (inCurrentWindow ? '#f59e0b' : '#2563eb')
-                              : (inCurrentWindow ? '#9ca3af' : '#64748b'),
+                              ? (inCurrentWindow ? palette.warn : palette.badge)
+                              : (inCurrentWindow ? palette.missDot : palette.missDotBorder),
                             boxShadow: inCurrentWindow
                               ? `0 0 0 2px ${isHit ? 'rgba(245,158,11,0.28)' : 'rgba(100,116,139,0.28)'}`
                               : 'none',
@@ -1891,8 +1918,8 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
                                   width: 18,
                                   height: 18,
                                   borderRadius: 4,
-                                  border: `1px solid ${active ? '#111827' : (hit ? item.color : '#cbd5e1')}`,
-                                  background: hit ? item.color : '#d1d5db',
+                                  border: `1px solid ${active ? palette.text : (hit ? item.color : palette.gridMissBorder)}`,
+                                  background: hit ? item.color : palette.gridMissBg,
                                   cursor: 'pointer',
                                   padding: 0,
                                   boxShadow: active ? (isLight ? '0 0 0 2px rgba(15,23,42,0.15)' : '0 0 0 2px rgba(255,255,255,0.2)') : 'none',
@@ -1921,7 +1948,7 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
                     <div style={{ fontSize: 13, color: palette.text }}>
                       {hoverPayload.date} · {selectedStockMeta?.code || selectedStock} · {hoverPayload.label}
                     </div>
-                    <div style={{ marginTop: 4, fontSize: 12, color: hoverPayload.hit ? '#16a34a' : '#ef4444', fontWeight: 700 }}>
+                    <div style={{ marginTop: 4, fontSize: 12, color: hoverPayload.hit ? palette.good : palette.bad, fontWeight: 700 }}>
                       {hoverPayload.hit ? '命中' : '未命中'} {hoverPayload.pinned ? '· 已锁定' : ''}
                     </div>
                     <div style={{ marginTop: 6, fontSize: 12, color: detailSecondaryColor, lineHeight: 1.45 }}>
