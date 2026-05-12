@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.neotrade2.cpolar_watchdog</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>python3</string>
+        <string>/Users/mac/NeoTrade2/scripts/ops/cpolar_watchdog.py</string>
+        <string>--external</string>
+        <string>https://sanford.vip.cpolar.cn</string>
+        <string>--local</string>
+        <string>http://127.0.0.1:8765</string>
+        <string>--cpolar-log</string>
+        <string>/Users/mac/neotrade_cpolar.log</string>
+        <string>--tunnel-host</string>
+        <string>sanford.vip.cpolar.cn</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>60</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/mac/NeoTrade2/logs/cpolar_watchdog.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/mac/NeoTrade2/logs/cpolar_watchdog.stderr.log</string>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>

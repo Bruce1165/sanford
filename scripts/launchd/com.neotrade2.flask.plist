@@ -20,7 +20,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>DASHBOARD_PASSWORD</key>
-        <string>admin/bruce2024</string>
+        <string>NeoTrade123</string>
         <key>PYTHONUNBUFFERED</key>
         <string>1</string>
     </dict>
