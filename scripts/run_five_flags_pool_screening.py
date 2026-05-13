@@ -108,6 +108,7 @@ class FiveFlagsPoolScreening:
             'total_stocks': 0,
             'processed_stocks': 0,
             'failed_stocks': 0,
+            'failed_pool_items': [],
             'flow_id': self.flow_id,
             'flow_plan_type': self.flow_plan_type,
             'market_phase': self.phase_context.get('resolved_phase'),
@@ -125,6 +126,23 @@ class FiveFlagsPoolScreening:
                 'by_screener': {s: 0 for s in FIVE_FLAGS_SCREENERS}
             }
         }
+
+    def _append_failed_pool_item(self, pool_data: dict, reason: str, detail: Optional[str] = None) -> None:
+        items = self.progress.get('failed_pool_items')
+        if not isinstance(items, list):
+            items = []
+            self.progress['failed_pool_items'] = items
+        item = {
+            'pool_id': pool_data.get('id'),
+            'stock_code': str(pool_data.get('stock_code') or '').strip(),
+            'stock_name': str(pool_data.get('stock_name') or '').strip(),
+            'reason': str(reason or '').strip()[:200],
+            'detail': (str(detail or '').strip()[:240] or None),
+            'at': datetime.now().isoformat(),
+        }
+        items.append(item)
+        if len(items) > 200:
+            del items[:-200]
 
     @staticmethod
     def _parse_date_str(value: str) -> Optional[date]:
@@ -520,6 +538,7 @@ class FiveFlagsPoolScreening:
                 logger.info("Pool %s skipped: already processed in progress file", pool_data.get('id'))
                 continue
             pool_failed = False
+            pool_fail_detail = None
             end_date = self.target_trade_date
             is_valid_stock, invalid_reason = self._is_valid_a_share_stock(pool_data)
             if not is_valid_stock:
@@ -540,6 +559,7 @@ class FiveFlagsPoolScreening:
                         e
                     )
                 failed_pools += 1
+                self._append_failed_pool_item(pool_data, f'invalid_stock:{invalid_reason}')
                 continue
             start_date = self._resolve_pool_start_date(pool_data)
             if not start_date:
@@ -549,6 +569,7 @@ class FiveFlagsPoolScreening:
                     pool_data.get('stock_code')
                 )
                 failed_pools += 1
+                self._append_failed_pool_item(pool_data, 'start_date_missing')
                 continue
             if start_date > end_date:
                 logger.info(
@@ -614,6 +635,8 @@ class FiveFlagsPoolScreening:
                         except Exception as e:
                             logger.error(f"Error in screener result: {e}")
                             pool_failed = True
+                            if pool_fail_detail is None:
+                                pool_fail_detail = f"{type(e).__name__}:{str(e)}"
                 elapsed_ms = (time.time() - level_start) * 1000
                 level_timing[level_index] += elapsed_ms
                 self.progress['level_duration_ms'] = {str(k): round(v, 2) for k, v in level_timing.items()}
@@ -649,11 +672,13 @@ class FiveFlagsPoolScreening:
                     self.progress['processed_pool_ids'].append(pool_data['id'])
                 if pool_failed:
                     failed_pools += 1
+                    self._append_failed_pool_item(pool_data, 'screener_exception', pool_fail_detail)
                 else:
                     processed_pools += 1
             except Exception as e:
                 logger.error(f"Failed to mark pool {pool_data['id']} as processed: {e}")
                 failed_pools += 1
+                self._append_failed_pool_item(pool_data, 'update_last_screened_failed', f"{type(e).__name__}:{str(e)}")
 
         # Batch insert all results
         total_inserted = 0

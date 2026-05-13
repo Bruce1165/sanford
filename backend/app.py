@@ -8220,6 +8220,11 @@ def _build_five_flags_run_view(run_id: str = 'latest'):
     total_levels = progress.get('total_levels')
     current_level = progress.get('current_level')
     level_duration_ms = progress.get('level_duration_ms') or {}
+    failed_pool_items = progress.get('failed_pool_items') or []
+    if not isinstance(failed_pool_items, list):
+        failed_pool_items = []
+    failed_pool_items_total = len(failed_pool_items)
+    failed_pool_items_preview = failed_pool_items[-50:]
     market_phase = progress.get('market_phase')
     phase_param_profile = progress.get('phase_param_profile') or {}
     profile_slot = progress.get('profile_slot')
@@ -8281,6 +8286,8 @@ def _build_five_flags_run_view(run_id: str = 'latest'):
         'total_levels': total_levels,
         'current_level': current_level,
         'level_duration_ms': level_duration_ms,
+        'failed_pool_items_total': failed_pool_items_total,
+        'failed_pool_items': failed_pool_items_preview,
         'market_phase': market_phase,
         'phase_param_profile': phase_param_profile,
         'profile_slot': profile_slot,

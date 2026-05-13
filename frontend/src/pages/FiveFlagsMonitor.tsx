@@ -46,6 +46,15 @@ interface RunItem {
   total_stocks?: number;
   processed_stocks?: number;
   failed_stocks?: number;
+  failed_pool_items_total?: number;
+  failed_pool_items?: Array<{
+    pool_id?: number;
+    stock_code?: string;
+    stock_name?: string;
+    reason?: string;
+    detail?: string | null;
+    at?: string;
+  }>;
   total_matches?: number;
   progress?: {
     percent?: number;
@@ -320,6 +329,16 @@ function readinessLabel(reason: string | null | undefined): string {
   return r;
 }
 
+function formatFailureReasonLabel(raw: string | null | undefined): string {
+  const s = String(raw || '').trim();
+  if (!s) return '—';
+  if (s.startsWith('invalid_stock:')) return `无效股票池（${s.slice('invalid_stock:'.length)}）`;
+  if (s === 'start_date_missing') return '缺少 start_date';
+  if (s === 'screener_exception') return '筛选器执行异常';
+  if (s === 'update_last_screened_failed') return '更新 last_screened_date 失败';
+  return s;
+}
+
 function normalizeScreenerId(value: string): string {
   return String(value || '')
     .trim()
@@ -431,6 +450,14 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
   const [hitStockCodeSet, setHitStockCodeSet] = useState<Set<string>>(new Set());
   const [screenerHitStats, setScreenerHitStats] = useState<ScreenerHitStat[]>([]);
   const [manualProgress, setManualProgress] = useState<ManualProgressState | null>(null);
+  const [manualFailedPreview, setManualFailedPreview] = useState<Array<{
+    pool_id?: number;
+    stock_code?: string;
+    stock_name?: string;
+    reason?: string;
+    detail?: string | null;
+    at?: string;
+  }>>([]);
 
   const today = formatDateOnly(new Date());
   const defaultPreset = MAX_WINDOW_DAYS;
@@ -634,6 +661,8 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
               const total = Number(merged.total_stocks || merged.progress?.total_stocks || 0);
               const percent = total > 0 ? Number(merged.progress?.percent || (processed / total * 100)) : Number(merged.progress?.percent || 0);
               setManualProgress({ processed, total, percent });
+              const failedItems = Array.isArray(merged.failed_pool_items) ? merged.failed_pool_items : [];
+              setManualFailedPreview(failedItems.slice(-20).reverse());
               progressMsg = `任务已启动，正在执行。\njob: ${jobId}\nrun: ${runId}\n进度: ${processed}/${total} (${percent.toFixed(2)}%)`;
             } catch {
               // Keep queue-only progress when run detail is transiently unavailable.
@@ -663,6 +692,8 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
               const matches = Number(merged.total_matches || 0);
               const percent = total > 0 ? Number(merged.progress?.percent || (processed / total * 100)) : Number(merged.progress?.percent || 0);
               setManualProgress({ processed, total, percent });
+              const failedItems = Array.isArray(merged.failed_pool_items) ? merged.failed_pool_items : [];
+              setManualFailedPreview(failedItems.slice(-20).reverse());
               doneMsg += `\n进度: ${processed}/${total} (${percent.toFixed(2)}%)`;
               doneMsg += `\n命中: ${matches}，失败: ${failed}`;
             } catch {
@@ -704,6 +735,8 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
               const matches = Number(merged.total_matches || 0);
               const percent = total > 0 ? Number(merged.progress?.percent || (processed / total * 100)) : Number(merged.progress?.percent || 0);
               setManualProgress({ processed, total, percent });
+              const failedItems = Array.isArray(merged.failed_pool_items) ? merged.failed_pool_items : [];
+              setManualFailedPreview(failedItems.slice(-20).reverse());
               failedMsg += `\n进度: ${processed}/${total} (${percent.toFixed(2)}%)`;
               failedMsg += `\n命中: ${matches}，失败: ${failed}`;
             } catch {
@@ -1903,6 +1936,32 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
                             />
                           </div>
                         </div>
+                      )}
+                      {runFeedbackDialog.lockClose && manualFailedPreview.length > 0 && (
+                        <details style={{ marginTop: 10 }}>
+                          <summary style={{ cursor: 'pointer', fontSize: 11, color: palette.dimText }}>
+                            失败池样本（最近 {manualFailedPreview.length} 条）
+                          </summary>
+                          <div style={{ marginTop: 8, maxHeight: 180, overflow: 'auto', border: `1px solid ${palette.inputBorder}`, borderRadius: 6, background: palette.inputBg }}>
+                            {manualFailedPreview.map((x, idx) => (
+                              <div key={`${x.pool_id || 'p'}-${x.stock_code || 'c'}-${idx}`} style={{ padding: '6px 8px', borderBottom: `1px solid ${palette.border}`, fontSize: 11, color: palette.text }}>
+                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                  <span style={{ fontFamily: 'monospace' }}>{String(x.stock_code || '—')}</span>
+                                  <span>{String(x.stock_name || '—')}</span>
+                                  <span style={{ color: palette.dimText }}>pool: {String(x.pool_id || '—')}</span>
+                                </div>
+                                <div style={{ marginTop: 2, color: palette.warnText }}>
+                                  原因: {formatFailureReasonLabel(x.reason)}
+                                </div>
+                                {!!x.detail && (
+                                  <div style={{ marginTop: 2, color: palette.dimText, whiteSpace: 'pre-wrap' }}>
+                                    {String(x.detail)}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </details>
                       )}
                       <div style={{ marginTop: 10, display: 'flex', justifyContent: 'flex-end' }}>
                         <button
