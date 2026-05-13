@@ -209,6 +209,12 @@ interface RunFeedbackDialog {
   lockClose?: boolean;
 }
 
+interface ManualProgressState {
+  percent: number;
+  processed: number;
+  total: number;
+}
+
 interface ScreeningLogItem {
   job_id: string;
   run_id?: string | null;
@@ -424,6 +430,7 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
   const [poolStocks, setPoolStocks] = useState<PoolStockItem[]>([]);
   const [hitStockCodeSet, setHitStockCodeSet] = useState<Set<string>>(new Set());
   const [screenerHitStats, setScreenerHitStats] = useState<ScreenerHitStat[]>([]);
+  const [manualProgress, setManualProgress] = useState<ManualProgressState | null>(null);
 
   const today = formatDateOnly(new Date());
   const defaultPreset = MAX_WINDOW_DAYS;
@@ -605,6 +612,7 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
         if (job?.run_id) runId = job.run_id;
 
         if (job?.status === 'queued') {
+          setManualProgress(null);
           setRunFeedbackDialog((prev) => ({
             visible: manualRunDialogDismissedJobIdRef.current === jobId ? false : prev.visible,
             tone: 'info',
@@ -624,7 +632,8 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
               setLiveRun(merged);
               const processed = Number(merged.processed_stocks || merged.progress?.processed_stocks || 0);
               const total = Number(merged.total_stocks || merged.progress?.total_stocks || 0);
-              const percent = Number(merged.progress?.percent || 0);
+              const percent = total > 0 ? Number(merged.progress?.percent || (processed / total * 100)) : Number(merged.progress?.percent || 0);
+              setManualProgress({ processed, total, percent });
               progressMsg = `任务已启动，正在执行。\njob: ${jobId}\nrun: ${runId}\n进度: ${processed}/${total} (${percent.toFixed(2)}%)`;
             } catch {
               // Keep queue-only progress when run detail is transiently unavailable.
@@ -652,7 +661,8 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
               const total = Number(merged.total_stocks || merged.progress?.total_stocks || 0);
               const failed = Number(merged.failed_stocks || 0);
               const matches = Number(merged.total_matches || 0);
-              const percent = Number(merged.progress?.percent || 0);
+              const percent = total > 0 ? Number(merged.progress?.percent || (processed / total * 100)) : Number(merged.progress?.percent || 0);
+              setManualProgress({ processed, total, percent });
               doneMsg += `\n进度: ${processed}/${total} (${percent.toFixed(2)}%)`;
               doneMsg += `\n命中: ${matches}，失败: ${failed}`;
             } catch {
@@ -692,7 +702,8 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
               const total = Number(merged.total_stocks || merged.progress?.total_stocks || 0);
               const failed = Number(merged.failed_stocks || 0);
               const matches = Number(merged.total_matches || 0);
-              const percent = Number(merged.progress?.percent || 0);
+              const percent = total > 0 ? Number(merged.progress?.percent || (processed / total * 100)) : Number(merged.progress?.percent || 0);
+              setManualProgress({ processed, total, percent });
               failedMsg += `\n进度: ${processed}/${total} (${percent.toFixed(2)}%)`;
               failedMsg += `\n命中: ${matches}，失败: ${failed}`;
             } catch {
@@ -1873,6 +1884,26 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
                       >
                         {runFeedbackDialog.message}
                       </div>
+                      {runFeedbackDialog.lockClose && manualProgress && (
+                        <div style={{ marginTop: 10 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: palette.dimText, marginBottom: 6 }}>
+                            <span>进度</span>
+                            <span style={{ fontFamily: 'monospace' }}>
+                              {manualProgress.processed}/{manualProgress.total} ({manualProgress.percent.toFixed(1)}%)
+                            </span>
+                          </div>
+                          <div style={{ height: 8, borderRadius: 999, background: palette.inputBg, border: `1px solid ${palette.inputBorder}`, overflow: 'hidden' }}>
+                            <div
+                              style={{
+                                height: '100%',
+                                width: `${Math.max(0, Math.min(100, manualProgress.percent))}%`,
+                                background: runFeedbackDialog.tone === 'error' ? palette.warnText : palette.badge,
+                                transition: 'width 180ms ease',
+                              }}
+                            />
+                          </div>
+                        </div>
+                      )}
                       <div style={{ marginTop: 10, display: 'flex', justifyContent: 'flex-end' }}>
                         <button
                           onClick={() => {
