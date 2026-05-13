@@ -84,6 +84,12 @@ interface ScreenerHitStat {
   share: number;
 }
 
+interface MissReasonRow {
+  label: string;
+  count: number;
+  share: number;
+}
+
 interface TimelineDetail {
   screener_id: string;
   match_reason: string;
@@ -458,6 +464,12 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
     detail?: string | null;
     at?: string;
   }>>([]);
+  const [missAggDate, setMissAggDate] = useState('');
+  const [missAggSampleN, setMissAggSampleN] = useState<10 | 20 | 30>(20);
+  const [missAggLoading, setMissAggLoading] = useState(false);
+  const [missAggError, setMissAggError] = useState('');
+  const [missAggRows, setMissAggRows] = useState<MissReasonRow[]>([]);
+  const [missAggMeta, setMissAggMeta] = useState<{ sample_stocks: number; total_cells: number; miss_cells: number; error_cells: number } | null>(null);
 
   const today = formatDateOnly(new Date());
   const defaultPreset = MAX_WINDOW_DAYS;
@@ -563,6 +575,7 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
         };
       }).sort((a, b) => b.matches - a.matches);
       setScreenerHitStats(stats);
+      setMissAggDate((prev) => prev || String(h.latest_trade_date || h.latest_result_date || today));
 
       let nextOffset = allPoolStocks.length;
       const expectedTotal = Number(ps.total || allPoolStocks.length);
@@ -608,6 +621,81 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
       setLoading(false);
     }
   }, []);
+
+  const computeMissReasonDistribution = useCallback(async () => {
+    const date = String(missAggDate || health?.latest_trade_date || health?.latest_result_date || windowEnd || today).slice(0, 10);
+    if (!date) return;
+    if (!poolStocks.length) return;
+    setMissAggLoading(true);
+    setMissAggError('');
+    try {
+      const preferred = poolStocks
+        .filter((x) => Number(x.has_hits || 0) === 0)
+        .slice()
+        .sort((a, b) => Number(b.unprocessed_count || 0) - Number(a.unprocessed_count || 0));
+      const fallback = poolStocks.slice().sort((a, b) => Number(b.unprocessed_count || 0) - Number(a.unprocessed_count || 0));
+      const base = preferred.length ? preferred : fallback;
+      const sample = base.slice(0, missAggSampleN);
+      const sampleN = sample.length;
+      if (!sampleN) return;
+
+      const tasks: Array<() => Promise<{ ok: boolean; data?: CellDiagnosisResponse; screenerKey: string }>> = [];
+      sample.forEach((stock) => {
+        FIXED_SCREENERS.forEach((s) => {
+          tasks.push(async () => {
+            const params = new URLSearchParams({
+              stock_code: String(stock.stock_code || '').trim(),
+              stock_name: String(stock.stock_name || '').trim(),
+              date,
+              screener_id: s.key,
+            });
+            try {
+              const resp = await fetchJson<CellDiagnosisResponse>(`/api/five-flags/diagnose-cell?${params.toString()}`, undefined, 15000);
+              return { ok: true, data: resp, screenerKey: s.key };
+            } catch {
+              return { ok: false, screenerKey: s.key };
+            }
+          });
+        });
+      });
+
+      const batchSize = 4;
+      const results: Array<{ ok: boolean; data?: CellDiagnosisResponse; screenerKey: string }> = [];
+      for (let i = 0; i < tasks.length; i += batchSize) {
+        const batch = tasks.slice(i, i + batchSize);
+        const settled = await Promise.all(batch.map((fn) => fn()));
+        results.push(...settled);
+      }
+
+      let missCells = 0;
+      let errorCells = 0;
+      const counter = new Map<string, number>();
+      results.forEach((r) => {
+        if (!r.ok || !r.data) {
+          errorCells += 1;
+          const k = '请求失败';
+          counter.set(k, (counter.get(k) || 0) + 1);
+          return;
+        }
+        if (r.data.matched) return;
+        missCells += 1;
+        const fc = r.data.first_failed_check;
+        const label = fc ? getFailedCheckGroupLabel(fc) : (String(r.data.reason_miss || '').trim() || '其他条件');
+        counter.set(label, (counter.get(label) || 0) + 1);
+      });
+
+      const total = Array.from(counter.values()).reduce((a, b) => a + b, 0);
+      const rows: MissReasonRow[] = Array.from(counter.entries())
+        .map(([label, count]) => ({ label, count, share: total > 0 ? count / total : 0 }))
+        .sort((a, b) => b.count - a.count);
+      setMissAggRows(rows);
+      setMissAggMeta({ sample_stocks: sampleN, total_cells: tasks.length, miss_cells: missCells, error_cells: errorCells });
+    } catch (e) {
+      setMissAggError(e instanceof Error ? e.message : '统计计算失败');
+    } finally {
+      setMissAggLoading(false);
+    }
+  }, [missAggDate, missAggSampleN, health?.latest_trade_date, health?.latest_result_date, poolStocks, windowEnd, today]);
 
   const loadCronLogs = useCallback(async () => {
     setCronLogsLoading(true);
@@ -1623,6 +1711,93 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
                     {!screenerHitStats.length && (
                       <tr>
                         <td colSpan={4} style={{ padding: '8px 8px', color: palette.dimText }}>暂无统计数据</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+            <details style={{ marginTop: 6 }}>
+              <summary style={{ cursor: 'pointer', fontSize: 11, color: palette.dimText }}>
+                未命中原因分布（抽样）
+              </summary>
+              <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 11, color: palette.dimText }}>目标日期</span>
+                <input
+                  type="date"
+                  value={missAggDate}
+                  onChange={(e) => setMissAggDate(e.target.value)}
+                  style={{
+                    border: `1px solid ${palette.inputBorder}`,
+                    background: palette.inputBg,
+                    color: palette.text,
+                    borderRadius: 8,
+                    padding: '4px 8px',
+                    fontSize: 12,
+                  }}
+                />
+                <span style={{ fontSize: 11, color: palette.dimText }}>样本</span>
+                <select
+                  value={missAggSampleN}
+                  onChange={(e) => setMissAggSampleN(Number(e.target.value) as 10 | 20 | 30)}
+                  style={{
+                    border: `1px solid ${palette.inputBorder}`,
+                    background: palette.inputBg,
+                    color: palette.text,
+                    borderRadius: 8,
+                    padding: '4px 8px',
+                    fontSize: 12,
+                  }}
+                >
+                  <option value={10}>10</option>
+                  <option value={20}>20</option>
+                  <option value={30}>30</option>
+                </select>
+                <button
+                  onClick={computeMissReasonDistribution}
+                  disabled={missAggLoading || !poolStocks.length}
+                  style={{
+                    border: `1px solid ${palette.inputBorder}`,
+                    background: missAggLoading ? palette.inputBg : 'transparent',
+                    color: missAggLoading ? palette.dimText : palette.text,
+                    borderRadius: 999,
+                    padding: '4px 10px',
+                    cursor: missAggLoading ? 'not-allowed' : 'pointer',
+                    fontSize: 12,
+                    fontWeight: 700,
+                  }}
+                >
+                  {missAggLoading ? '计算中...' : '计算'}
+                </button>
+                {missAggMeta && (
+                  <span style={{ fontSize: 11, color: palette.dimText, fontFamily: 'monospace' }}>
+                    stocks={missAggMeta.sample_stocks} cells={missAggMeta.total_cells} miss={missAggMeta.miss_cells} err={missAggMeta.error_cells}
+                  </span>
+                )}
+              </div>
+              {!!missAggError && <div style={{ marginTop: 6, fontSize: 11, color: palette.warnText }}>{missAggError}</div>}
+              <div style={{ marginTop: 8, overflow: 'auto', border: `1px solid ${palette.inputBorder}`, borderRadius: 6, background: palette.inputBg }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ borderBottom: `1px solid ${palette.border}`, color: palette.dimText }}>
+                      <th style={{ textAlign: 'left', padding: '6px 8px' }}>首失败条件分组</th>
+                      <th style={{ textAlign: 'right', padding: '6px 8px' }}>数量</th>
+                      <th style={{ textAlign: 'right', padding: '6px 8px' }}>占比</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {missAggRows.map((r) => (
+                      <tr key={r.label} style={{ borderTop: `1px solid ${palette.border}` }}>
+                        <td style={{ padding: '6px 8px', color: palette.text, fontWeight: 700 }}>{r.label}</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'right', color: palette.text, fontFamily: 'monospace' }}>{r.count}</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'right', color: palette.dimText, fontFamily: 'monospace' }}>{(r.share * 100).toFixed(1)}%</td>
+                      </tr>
+                    ))}
+                    {!missAggRows.length && (
+                      <tr>
+                        <td colSpan={3} style={{ padding: '8px 8px', color: palette.dimText }}>
+                          点击“计算”后生成统计（样本来自股票池，优先取未命中股票）
+                        </td>
                       </tr>
                     )}
                   </tbody>
