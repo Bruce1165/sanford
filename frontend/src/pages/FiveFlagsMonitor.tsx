@@ -1659,10 +1659,10 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
       ) : (
         <div style={{ display: 'grid', gridTemplateRows: 'auto auto 1fr', height: '100%', overflow: 'hidden' }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 4, padding: '4px 10px' }}>
-            <StatCard label="股票池条目" value={health?.pool_total_count ?? 0} theme={theme} compact />
-            <StatCard label="待补筛池" value={health?.pool_unprocessed_count ?? 0} theme={theme} compact />
-            <StatCard label="命中股票数" value={hitStockCodeSet.size} theme={theme} compact />
-            <StatCard label="结果条目" value={health?.result_total_count ?? 0} theme={theme} compact />
+            <StatCard label="股票池记录" value={health?.pool_total_count ?? 0} theme={theme} compact />
+            <StatCard label="待补筛记录" value={health?.pool_unprocessed_count ?? 0} theme={theme} compact />
+            <StatCard label="命中股票（去重）" value={hitStockCodeSet.size} theme={theme} compact />
+            <StatCard label="命中条目（含日期）" value={health?.result_total_count ?? 0} theme={theme} compact />
           </div>
           <div style={{ padding: '0 10px 6px', borderBottom: `1px solid ${palette.border}` }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 11, color: palette.dimText }}>
