@@ -1684,13 +1684,16 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
               <summary style={{ cursor: 'pointer', fontSize: 11, color: palette.dimText }}>
                 筛选器命中分布（全量结果）
               </summary>
+              <div style={{ marginTop: 6, fontSize: 11, color: palette.dimText }}>
+                命中条目按「股票×日期×筛选器」计数；命中股票为去重后的股票数
+              </div>
               <div style={{ marginTop: 8, overflow: 'auto', border: `1px solid ${palette.inputBorder}`, borderRadius: 6, background: palette.inputBg }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                   <thead>
                     <tr style={{ borderBottom: `1px solid ${palette.border}`, color: palette.dimText }}>
                       <th style={{ textAlign: 'left', padding: '6px 8px' }}>筛选器</th>
-                      <th style={{ textAlign: 'right', padding: '6px 8px' }}>命中条目</th>
-                      <th style={{ textAlign: 'right', padding: '6px 8px' }}>命中股票</th>
+                      <th style={{ textAlign: 'right', padding: '6px 8px' }}>命中条目（含日期）</th>
+                      <th style={{ textAlign: 'right', padding: '6px 8px' }}>命中股票（去重）</th>
                       <th style={{ textAlign: 'right', padding: '6px 8px' }}>占比</th>
                     </tr>
                   </thead>
