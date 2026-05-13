@@ -7,6 +7,8 @@ interface FiveFlagsHealth {
   timestamp: string;
   pool_total_count: number;
   pool_unprocessed_count: number;
+  readiness_reason?: string | null;
+  latest_trade_date?: string | null;
   result_total_count: number;
   latest_result_date: string | null;
 }
@@ -292,6 +294,17 @@ const FIXED_SCREENERS = [
   { key: 'er_ban_hui_tiao', label: '二板回调', color: '#ef4444', aliases: ['二板回调', 'er_ban_hui_tiao', 'erbanhuitiao', 'second_board_pullback'] },
 ] as const;
 
+function readinessLabel(reason: string | null | undefined): string {
+  const r = String(reason || '').trim();
+  if (!r) return '—';
+  if (r === 'ready') return '可运行（存在待补筛池）';
+  if (r === 'up_to_date') return '已到最新交易日（无需补跑）';
+  if (r === 'no_pools') return '股票池为空';
+  if (r === 'no_price_data') return '行情数据为空';
+  if (r === 'a_share_data_not_updated_yet') return '行情可能未更新（池日期晚于行情）';
+  return r;
+}
+
 function normalizeScreenerId(value: string): string {
   return String(value || '')
     .trim()
@@ -401,7 +414,6 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
   const [liveRun, setLiveRun] = useState<RunItem | null>(null);
   const [poolStocks, setPoolStocks] = useState<PoolStockItem[]>([]);
   const [hitStockCodeSet, setHitStockCodeSet] = useState<Set<string>>(new Set());
-  const [resultsTotal, setResultsTotal] = useState(0);
 
   const today = formatDateOnly(new Date());
   const defaultPreset = MAX_WINDOW_DAYS;
@@ -461,7 +473,6 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
       setHealth(h);
       setRuns(r.items || []);
       setLiveRun((r.items && r.items.length > 0) ? r.items[0] : null);
-      setResultsTotal(rs.total || 0);
       const allPoolStocks: PoolStockCompatItem[] = [...(ps.items || [])];
       const hitStockCodes = new Set<string>((rs.items || []).map((x) => String(x.stock_code || '').trim()).filter(Boolean));
       let resultOffset = (rs.items || []).length;
@@ -1476,10 +1487,28 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
         <div style={{ padding: 16, color: palette.dimText }}>Loading...</div>
       ) : (
         <div style={{ display: 'grid', gridTemplateRows: 'auto auto 1fr', height: '100%', overflow: 'hidden' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 4, padding: '4px 10px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 4, padding: '4px 10px' }}>
+            <StatCard label="股票池条目" value={health?.pool_total_count ?? 0} theme={theme} compact />
+            <StatCard label="待补筛池" value={health?.pool_unprocessed_count ?? 0} theme={theme} compact />
             <StatCard label="命中股票数" value={hitStockCodeSet.size} theme={theme} compact />
-            <StatCard label="处理股票数" value={health?.result_total_count ?? 0} theme={theme} compact />
-            <StatCard label="总股票数" value={resultsTotal} theme={theme} compact />
+            <StatCard label="结果条目" value={health?.result_total_count ?? 0} theme={theme} compact />
+          </div>
+          <div style={{ padding: '0 10px 6px', borderBottom: `1px solid ${palette.border}` }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 11, color: palette.dimText }}>
+              <span style={{ color: palette.title, letterSpacing: 1, whiteSpace: 'nowrap' }}>筛查口径</span>
+              <span style={{ whiteSpace: 'nowrap' }}>
+                筛选器: <span style={{ color: palette.text }}>{FIXED_SCREENERS.map((x) => x.label).join(' / ')}</span>
+              </span>
+              <span style={{ whiteSpace: 'nowrap' }}>
+                行情截至: <span style={{ color: palette.text }}>{health?.latest_trade_date || '—'}</span>
+              </span>
+              <span style={{ whiteSpace: 'nowrap' }}>
+                结果截至: <span style={{ color: palette.text }}>{health?.latest_result_date || '—'}</span>
+              </span>
+              <span style={{ whiteSpace: 'nowrap' }}>
+                就绪状态: <span style={{ color: palette.text }}>{readinessLabel(health?.readiness_reason)}</span>
+              </span>
+            </div>
           </div>
 
           <div style={{ padding: '0 10px 6px', borderBottom: `1px solid ${palette.border}` }}>
