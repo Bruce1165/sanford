@@ -265,7 +265,11 @@ class LaoYaTouPoolRepository:
     @db_connection_error_handler
     def upsert_pool_batch(self, records: List[dict]) -> Dict[str, int]:
         """
-        Incremental mode: insert new records by pool_biz_key and ignore duplicates.
+        Incremental mode: insert new records and skip duplicates.
+
+        Duplicate definition (business rule):
+        - if stock_code already exists in lao_ya_tou_pool, do not insert a new row
+          even if date range or file_name differs.
 
         Returns:
             {'inserted': int, 'skipped': int}
@@ -275,6 +279,9 @@ class LaoYaTouPoolRepository:
         skipped = 0
 
         try:
+            cursor.execute('SELECT DISTINCT stock_code FROM lao_ya_tou_pool')
+            existing_codes = {str(r['stock_code']).strip() for r in cursor.fetchall() if r and r['stock_code']}
+            seen_codes: set[str] = set()
             for record in records:
                 self._validate_stock_code(record['stock_code'])
                 self._validate_stock_name(record['stock_name'])
@@ -282,8 +289,13 @@ class LaoYaTouPoolRepository:
                 self._validate_date_format(record['end_date'], 'end_date')
                 self._validate_file_name(record['file_name'])
 
+                stock_code = str(record['stock_code']).strip()
+                if stock_code in existing_codes or stock_code in seen_codes:
+                    skipped += 1
+                    continue
+
                 biz_key = record.get('pool_biz_key') or self._build_pool_biz_key(
-                    stock_code=record['stock_code'],
+                    stock_code=stock_code,
                     start_date=record['start_date'],
                     end_date=record['end_date'],
                     file_name=record['file_name']
@@ -295,7 +307,7 @@ class LaoYaTouPoolRepository:
                     VALUES (?, ?, ?, ?, ?, ?)
                 ''', (
                     biz_key,
-                    record['stock_code'],
+                    stock_code,
                     record['stock_name'],
                     record['start_date'],
                     record['end_date'],
@@ -303,6 +315,8 @@ class LaoYaTouPoolRepository:
                 ))
                 if cursor.rowcount == 1:
                     inserted += 1
+                    existing_codes.add(stock_code)
+                    seen_codes.add(stock_code)
                 else:
                     skipped += 1
 

@@ -7,9 +7,12 @@ interface FiveFlagsHealth {
   timestamp: string;
   pool_total_count: number;
   pool_unprocessed_count: number;
+  pool_stock_count?: number;
+  pool_unprocessed_stock_count?: number;
   readiness_reason?: string | null;
   latest_trade_date?: string | null;
   result_total_count: number;
+  result_stock_count?: number;
   latest_result_date: string | null;
 }
 
@@ -84,10 +87,19 @@ interface ScreenerHitStat {
   share: number;
 }
 
-interface MissReasonRow {
-  label: string;
-  count: number;
-  share: number;
+interface MissAnalysisResponse {
+  date: string;
+  scope: 'pool' | 'hit_today' | string;
+  stocks_total: number;
+  screeners: Array<{
+    screener_id: string;
+    label: string;
+    total_stocks: number;
+    matched_stocks: number;
+    missed_stocks: number;
+    error_cells: number;
+    top_miss_reasons: Array<{ reason: string; count: number; share: number }>;
+  }>;
 }
 
 interface TimelineDetail {
@@ -464,12 +476,11 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
     detail?: string | null;
     at?: string;
   }>>([]);
-  const [missAggDate, setMissAggDate] = useState('');
-  const [missAggSampleN, setMissAggSampleN] = useState<10 | 20 | 30>(20);
-  const [missAggLoading, setMissAggLoading] = useState(false);
-  const [missAggError, setMissAggError] = useState('');
-  const [missAggRows, setMissAggRows] = useState<MissReasonRow[]>([]);
-  const [missAggMeta, setMissAggMeta] = useState<{ sample_stocks: number; total_cells: number; miss_cells: number; error_cells: number } | null>(null);
+  const [missAnalysisDate, setMissAnalysisDate] = useState('');
+  const [missAnalysisScope, setMissAnalysisScope] = useState<'pool' | 'hit_today'>('pool');
+  const [missAnalysisLoading, setMissAnalysisLoading] = useState(false);
+  const [missAnalysisError, setMissAnalysisError] = useState('');
+  const [missAnalysisResult, setMissAnalysisResult] = useState<MissAnalysisResponse | null>(null);
 
   const today = formatDateOnly(new Date());
   const defaultPreset = MAX_WINDOW_DAYS;
@@ -575,7 +586,7 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
         };
       }).sort((a, b) => b.matches - a.matches);
       setScreenerHitStats(stats);
-      setMissAggDate((prev) => prev || String(h.latest_trade_date || h.latest_result_date || today));
+      setMissAnalysisDate((prev: string) => prev || String(h.latest_trade_date || h.latest_result_date || today));
 
       let nextOffset = allPoolStocks.length;
       const expectedTotal = Number(ps.total || allPoolStocks.length);
@@ -622,80 +633,29 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
     }
   }, []);
 
-  const computeMissReasonDistribution = useCallback(async () => {
-    const date = String(missAggDate || health?.latest_trade_date || health?.latest_result_date || windowEnd || today).slice(0, 10);
+  const computeMissAnalysis = useCallback(async () => {
+    const date = String(missAnalysisDate || health?.latest_trade_date || health?.latest_result_date || windowEnd || today).slice(0, 10);
     if (!date) return;
-    if (!poolStocks.length) return;
-    setMissAggLoading(true);
-    setMissAggError('');
+    setMissAnalysisLoading(true);
+    setMissAnalysisError('');
     try {
-      const preferred = poolStocks
-        .filter((x) => Number(x.has_hits || 0) === 0)
-        .slice()
-        .sort((a, b) => Number(b.unprocessed_count || 0) - Number(a.unprocessed_count || 0));
-      const fallback = poolStocks.slice().sort((a, b) => Number(b.unprocessed_count || 0) - Number(a.unprocessed_count || 0));
-      const base = preferred.length ? preferred : fallback;
-      const sample = base.slice(0, missAggSampleN);
-      const sampleN = sample.length;
-      if (!sampleN) return;
-
-      const tasks: Array<() => Promise<{ ok: boolean; data?: CellDiagnosisResponse; screenerKey: string }>> = [];
-      sample.forEach((stock) => {
-        FIXED_SCREENERS.forEach((s) => {
-          tasks.push(async () => {
-            const params = new URLSearchParams({
-              stock_code: String(stock.stock_code || '').trim(),
-              stock_name: String(stock.stock_name || '').trim(),
-              date,
-              screener_id: s.key,
-            });
-            try {
-              const resp = await fetchJson<CellDiagnosisResponse>(`/api/five-flags/diagnose-cell?${params.toString()}`, undefined, 15000);
-              return { ok: true, data: resp, screenerKey: s.key };
-            } catch {
-              return { ok: false, screenerKey: s.key };
-            }
-          });
-        });
-      });
-
-      const batchSize = 4;
-      const results: Array<{ ok: boolean; data?: CellDiagnosisResponse; screenerKey: string }> = [];
-      for (let i = 0; i < tasks.length; i += batchSize) {
-        const batch = tasks.slice(i, i + batchSize);
-        const settled = await Promise.all(batch.map((fn) => fn()));
-        results.push(...settled);
-      }
-
-      let missCells = 0;
-      let errorCells = 0;
-      const counter = new Map<string, number>();
-      results.forEach((r) => {
-        if (!r.ok || !r.data) {
-          errorCells += 1;
-          const k = '请求失败';
-          counter.set(k, (counter.get(k) || 0) + 1);
-          return;
-        }
-        if (r.data.matched) return;
-        missCells += 1;
-        const fc = r.data.first_failed_check;
-        const label = fc ? getFailedCheckGroupLabel(fc) : (String(r.data.reason_miss || '').trim() || '其他条件');
-        counter.set(label, (counter.get(label) || 0) + 1);
-      });
-
-      const total = Array.from(counter.values()).reduce((a, b) => a + b, 0);
-      const rows: MissReasonRow[] = Array.from(counter.entries())
-        .map(([label, count]) => ({ label, count, share: total > 0 ? count / total : 0 }))
-        .sort((a, b) => b.count - a.count);
-      setMissAggRows(rows);
-      setMissAggMeta({ sample_stocks: sampleN, total_cells: tasks.length, miss_cells: missCells, error_cells: errorCells });
+      const resp = await fetchJson<MissAnalysisResponse>(
+        '/api/five-flags/miss-analysis',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ date, scope: missAnalysisScope }),
+        },
+        60000
+      );
+      setMissAnalysisResult(resp);
     } catch (e) {
-      setMissAggError(e instanceof Error ? e.message : '统计计算失败');
+      setMissAnalysisError(e instanceof Error ? e.message : '分析失败');
+      setMissAnalysisResult(null);
     } finally {
-      setMissAggLoading(false);
+      setMissAnalysisLoading(false);
     }
-  }, [missAggDate, missAggSampleN, health?.latest_trade_date, health?.latest_result_date, poolStocks, windowEnd, today]);
+  }, [missAnalysisDate, missAnalysisScope, health?.latest_trade_date, health?.latest_result_date, windowEnd, today]);
 
   const loadCronLogs = useCallback(async () => {
     setCronLogsLoading(true);
@@ -1659,10 +1619,10 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
       ) : (
         <div style={{ display: 'grid', gridTemplateRows: 'auto auto 1fr', height: '100%', overflow: 'hidden' }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 4, padding: '4px 10px' }}>
-            <StatCard label="股票池记录" value={health?.pool_total_count ?? 0} theme={theme} compact />
-            <StatCard label="待补筛记录" value={health?.pool_unprocessed_count ?? 0} theme={theme} compact />
-            <StatCard label="命中股票（去重）" value={hitStockCodeSet.size} theme={theme} compact />
-            <StatCard label="命中条目（含日期）" value={health?.result_total_count ?? 0} theme={theme} compact />
+            <StatCard label="老鸭头池股票（去重）" value={health?.pool_stock_count ?? poolStocks.length ?? 0} theme={theme} compact />
+            <StatCard label="待筛查股票（去重）" value={health?.pool_unprocessed_stock_count ?? poolStocks.filter((x) => (x.unprocessed_count || 0) > 0).length} theme={theme} compact />
+            <StatCard label="五图命中股票（去重）" value={health?.result_stock_count ?? hitStockCodeSet.size} theme={theme} compact />
+            <StatCard label="最新交易日" value={health?.latest_trade_date || '—'} theme={theme} compact />
           </div>
           <div style={{ padding: '0 10px 6px', borderBottom: `1px solid ${palette.border}` }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 11, color: palette.dimText }}>
@@ -1722,14 +1682,14 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
             </details>
             <details style={{ marginTop: 6 }}>
               <summary style={{ cursor: 'pointer', fontSize: 11, color: palette.dimText }}>
-                未命中原因分布（抽样）
+                未命中原因分析（按筛选器）
               </summary>
               <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 11, color: palette.dimText }}>目标日期</span>
                 <input
                   type="date"
-                  value={missAggDate}
-                  onChange={(e) => setMissAggDate(e.target.value)}
+                  value={missAnalysisDate}
+                  onChange={(e) => setMissAnalysisDate(e.target.value)}
                   style={{
                     border: `1px solid ${palette.inputBorder}`,
                     background: palette.inputBg,
@@ -1739,10 +1699,10 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
                     fontSize: 12,
                   }}
                 />
-                <span style={{ fontSize: 11, color: palette.dimText }}>样本</span>
+                <span style={{ fontSize: 11, color: palette.dimText }}>范围</span>
                 <select
-                  value={missAggSampleN}
-                  onChange={(e) => setMissAggSampleN(Number(e.target.value) as 10 | 20 | 30)}
+                  value={missAnalysisScope}
+                  onChange={(e) => setMissAnalysisScope(e.target.value as 'pool' | 'hit_today')}
                   style={{
                     border: `1px solid ${palette.inputBorder}`,
                     background: palette.inputBg,
@@ -1752,54 +1712,59 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
                     fontSize: 12,
                   }}
                 >
-                  <option value={10}>10</option>
-                  <option value={20}>20</option>
-                  <option value={30}>30</option>
+                  <option value="pool">全股票池</option>
+                  <option value="hit_today">当日命中池</option>
                 </select>
                 <button
-                  onClick={computeMissReasonDistribution}
-                  disabled={missAggLoading || !poolStocks.length}
+                  onClick={computeMissAnalysis}
+                  disabled={missAnalysisLoading}
                   style={{
                     border: `1px solid ${palette.inputBorder}`,
-                    background: missAggLoading ? palette.inputBg : 'transparent',
-                    color: missAggLoading ? palette.dimText : palette.text,
+                    background: missAnalysisLoading ? palette.inputBg : 'transparent',
+                    color: missAnalysisLoading ? palette.dimText : palette.text,
                     borderRadius: 999,
                     padding: '4px 10px',
-                    cursor: missAggLoading ? 'not-allowed' : 'pointer',
+                    cursor: missAnalysisLoading ? 'not-allowed' : 'pointer',
                     fontSize: 12,
                     fontWeight: 700,
                   }}
                 >
-                  {missAggLoading ? '计算中...' : '计算'}
+                  {missAnalysisLoading ? '分析中...' : '分析'}
                 </button>
-                {missAggMeta && (
+                {missAnalysisResult && (
                   <span style={{ fontSize: 11, color: palette.dimText, fontFamily: 'monospace' }}>
-                    stocks={missAggMeta.sample_stocks} cells={missAggMeta.total_cells} miss={missAggMeta.miss_cells} err={missAggMeta.error_cells}
+                    stocks={missAnalysisResult.stocks_total} date={missAnalysisResult.date} scope={missAnalysisResult.scope}
                   </span>
                 )}
               </div>
-              {!!missAggError && <div style={{ marginTop: 6, fontSize: 11, color: palette.warnText }}>{missAggError}</div>}
+              {!!missAnalysisError && <div style={{ marginTop: 6, fontSize: 11, color: palette.warnText }}>{missAnalysisError}</div>}
               <div style={{ marginTop: 8, overflow: 'auto', border: `1px solid ${palette.inputBorder}`, borderRadius: 6, background: palette.inputBg }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                   <thead>
                     <tr style={{ borderBottom: `1px solid ${palette.border}`, color: palette.dimText }}>
-                      <th style={{ textAlign: 'left', padding: '6px 8px' }}>首失败条件分组</th>
-                      <th style={{ textAlign: 'right', padding: '6px 8px' }}>数量</th>
-                      <th style={{ textAlign: 'right', padding: '6px 8px' }}>占比</th>
+                      <th style={{ textAlign: 'left', padding: '6px 8px' }}>筛选器</th>
+                      <th style={{ textAlign: 'right', padding: '6px 8px' }}>命中/总数</th>
+                      <th style={{ textAlign: 'left', padding: '6px 8px' }}>主要未命中原因（Top）</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {missAggRows.map((r) => (
-                      <tr key={r.label} style={{ borderTop: `1px solid ${palette.border}` }}>
-                        <td style={{ padding: '6px 8px', color: palette.text, fontWeight: 700 }}>{r.label}</td>
-                        <td style={{ padding: '6px 8px', textAlign: 'right', color: palette.text, fontFamily: 'monospace' }}>{r.count}</td>
-                        <td style={{ padding: '6px 8px', textAlign: 'right', color: palette.dimText, fontFamily: 'monospace' }}>{(r.share * 100).toFixed(1)}%</td>
+                    {(missAnalysisResult?.screeners || []).map((s) => (
+                      <tr key={s.screener_id} style={{ borderTop: `1px solid ${palette.border}` }}>
+                        <td style={{ padding: '6px 8px', color: palette.text, fontWeight: 700 }}>{s.label}</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'right', color: palette.text, fontFamily: 'monospace' }}>
+                          {s.matched_stocks}/{s.total_stocks}
+                        </td>
+                        <td style={{ padding: '6px 8px', color: palette.dimText }}>
+                          {(s.top_miss_reasons || []).length
+                            ? s.top_miss_reasons.map((r) => `${r.reason} (${r.count})`).join('；')
+                            : '—'}
+                        </td>
                       </tr>
                     ))}
-                    {!missAggRows.length && (
+                    {!missAnalysisResult?.screeners?.length && (
                       <tr>
                         <td colSpan={3} style={{ padding: '8px 8px', color: palette.dimText }}>
-                          点击“计算”后生成统计（样本来自股票池，优先取未命中股票）
+                          点击“分析”后生成统计（未命中原因使用首个失败检查的 message/原因摘要）
                         </td>
                       </tr>
                     )}

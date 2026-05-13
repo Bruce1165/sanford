@@ -4702,10 +4702,30 @@ def five_flags_health():
         cursor.execute('SELECT COUNT(*) AS cnt FROM lao_ya_tou_pool')
         total_pools = cursor.fetchone()['cnt']
 
+        cursor.execute('SELECT COUNT(DISTINCT stock_code) AS cnt FROM lao_ya_tou_pool')
+        total_pool_stocks = cursor.fetchone()['cnt']
+
         unprocessed_pools = int(readiness.get('pending_pool_count') or 0)
+        latest_trade_date = readiness.get('latest_trade_date')
+        pending_pool_stocks = 0
+        if latest_trade_date:
+            cursor.execute(
+                '''
+                SELECT COUNT(DISTINCT stock_code) AS cnt
+                FROM lao_ya_tou_pool
+                WHERE last_screened_date IS NULL
+                   OR TRIM(COALESCE(last_screened_date, '')) = ''
+                   OR last_screened_date < ?
+                ''',
+                (latest_trade_date,)
+            )
+            pending_pool_stocks = cursor.fetchone()['cnt']
 
         cursor.execute('SELECT COUNT(*) AS cnt FROM lao_ya_tou_five_flags')
         total_results = cursor.fetchone()['cnt']
+
+        cursor.execute('SELECT COUNT(DISTINCT stock_code) AS cnt FROM lao_ya_tou_five_flags')
+        total_result_stocks = cursor.fetchone()['cnt']
 
         cursor.execute('SELECT MAX(screen_date) AS latest_date FROM lao_ya_tou_five_flags')
         latest_result_date = cursor.fetchone()['latest_date']
@@ -4717,14 +4737,167 @@ def five_flags_health():
             'status': status,
             'timestamp': datetime.now().isoformat(),
             'pool_total_count': total_pools,
+            'pool_stock_count': total_pool_stocks,
             'pool_unprocessed_count': unprocessed_pools,
+            'pool_unprocessed_stock_count': pending_pool_stocks,
             'readiness_reason': readiness.get('reason'),
-            'latest_trade_date': readiness.get('latest_trade_date'),
+            'latest_trade_date': latest_trade_date,
             'result_total_count': total_results,
+            'result_stock_count': total_result_stocks,
             'latest_result_date': latest_result_date
         })
     except Exception as e:
         return jsonify({'error': f'five-flags health check failed: {str(e)}'}), 500
+
+
+@app.route('/api/five-flags/miss-analysis', methods=['POST'])
+def five_flags_miss_analysis():
+    payload = request.get_json(silent=True) or {}
+    date_iso = str(payload.get('date') or '').strip()
+    scope = str(payload.get('scope') or 'pool').strip()
+    sample_n = payload.get('sample_n')
+    max_reasons = payload.get('max_reasons')
+
+    if not date_iso:
+        return jsonify({'error': 'date is required'}), 400
+
+    try:
+        sample_n_int = int(sample_n) if sample_n is not None else None
+        if sample_n_int is not None and sample_n_int <= 0:
+            sample_n_int = None
+    except Exception:
+        sample_n_int = None
+
+    try:
+        max_reasons_int = int(max_reasons) if max_reasons is not None else 6
+        max_reasons_int = max(3, min(20, max_reasons_int))
+    except Exception:
+        max_reasons_int = 6
+
+    try:
+        conn = get_stock_db_connection()
+        cursor = conn.cursor()
+
+        if scope == 'hit_today':
+            cursor.execute(
+                '''
+                SELECT stock_code, MAX(stock_name) AS stock_name
+                FROM lao_ya_tou_five_flags
+                WHERE screen_date = ?
+                GROUP BY stock_code
+                ORDER BY stock_code ASC
+                ''',
+                (date_iso,)
+            )
+        else:
+            cursor.execute(
+                '''
+                SELECT p.stock_code AS stock_code, p.stock_name AS stock_name
+                FROM lao_ya_tou_pool p
+                WHERE p.id IN (
+                    SELECT MAX(id) FROM lao_ya_tou_pool GROUP BY stock_code
+                )
+                ORDER BY p.stock_code ASC
+                '''
+            )
+        rows = cursor.fetchall()
+        stocks = [(str(r['stock_code']).strip(), str(r['stock_name']).strip()) for r in rows if r and r['stock_code']]
+        conn.close()
+
+        if not stocks:
+            return safe_jsonify({
+                'date': date_iso,
+                'scope': scope,
+                'stocks_total': 0,
+                'screeners': [],
+            })
+
+        if len(stocks) > 350 and sample_n_int is None:
+            return jsonify({'error': 'too many stocks for full analysis; set sample_n'}), 400
+
+        if sample_n_int is not None:
+            stocks = stocks[:min(sample_n_int, len(stocks))]
+
+        from scripts.pool_screener_adapter import ScreenerAdapter
+        adapter = ScreenerAdapter(db_path=str(DASHBOARD_DIR.parent / 'data' / 'stock_data.db'))
+
+        screeners = [
+            ('shi_pan_xian', '试盘线'),
+            ('jin_feng_huang', '金凤凰'),
+            ('yin_feng_huang', '银凤凰'),
+            ('zhang_ting_bei_liang_yin', '倍量阴'),
+            ('er_ban_hui_tiao', '二板回调'),
+        ]
+
+        def _reason_from_result(res: dict) -> str:
+            if not isinstance(res, dict):
+                return '请求失败'
+            fc = res.get('first_failed_check')
+            if isinstance(fc, dict):
+                msg = str(fc.get('message') or '').strip()
+                if msg:
+                    return msg
+                label = str(fc.get('label') or '').strip()
+                if label:
+                    return label
+                key = str(fc.get('key') or '').strip()
+                if key:
+                    return key
+            rm = str(res.get('reason_miss') or '').strip()
+            return rm or '未满足条件'
+
+        out = []
+        for screener_id, label in screeners:
+            matched = 0
+            errors = 0
+            reason_counter: Dict[str, int] = {}
+            for code, name in stocks:
+                try:
+                    res = adapter.check_stock(
+                        screener_id=screener_id,
+                        stock_code=code,
+                        stock_name=name or code,
+                        date=date_iso,
+                        include_miss_details=True
+                    )
+                except Exception:
+                    res = None
+                if not isinstance(res, dict):
+                    errors += 1
+                    reason = '请求失败'
+                    reason_counter[reason] = reason_counter.get(reason, 0) + 1
+                    continue
+                if _to_native_bool(res.get('matched')):
+                    matched += 1
+                    continue
+                reason = _reason_from_result(res)
+                reason_counter[reason] = reason_counter.get(reason, 0) + 1
+
+            total = len(stocks)
+            miss = total - matched
+            top = sorted(reason_counter.items(), key=lambda x: (-x[1], x[0]))[:max_reasons_int]
+            top_rows = [
+                {'reason': k, 'count': v, 'share': (v / miss) if miss > 0 else 0.0}
+                for k, v in top
+            ]
+            out.append({
+                'screener_id': screener_id,
+                'label': label,
+                'total_stocks': total,
+                'matched_stocks': matched,
+                'missed_stocks': miss,
+                'error_cells': errors,
+                'top_miss_reasons': top_rows,
+            })
+
+        return safe_jsonify({
+            'date': date_iso,
+            'scope': scope,
+            'stocks_total': len(stocks),
+            'screeners': out,
+        })
+    except Exception as e:
+        return jsonify({'error': f'failed to analyze misses: {str(e)}'}), 500
 
 
 @app.route('/api/five-flags/cron-logs', methods=['GET'])
