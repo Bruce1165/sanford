@@ -66,6 +66,15 @@ interface FiveFlagsResult {
   created_at: string;
 }
 
+interface ScreenerHitStat {
+  key: string;
+  label: string;
+  color: string;
+  matches: number;
+  unique_stocks: number;
+  share: number;
+}
+
 interface TimelineDetail {
   screener_id: string;
   match_reason: string;
@@ -414,6 +423,7 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
   const [liveRun, setLiveRun] = useState<RunItem | null>(null);
   const [poolStocks, setPoolStocks] = useState<PoolStockItem[]>([]);
   const [hitStockCodeSet, setHitStockCodeSet] = useState<Set<string>>(new Set());
+  const [screenerHitStats, setScreenerHitStats] = useState<ScreenerHitStat[]>([]);
 
   const today = formatDateOnly(new Date());
   const defaultPreset = MAX_WINDOW_DAYS;
@@ -474,7 +484,26 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
       setRuns(r.items || []);
       setLiveRun((r.items && r.items.length > 0) ? r.items[0] : null);
       const allPoolStocks: PoolStockCompatItem[] = [...(ps.items || [])];
-      const hitStockCodes = new Set<string>((rs.items || []).map((x) => String(x.stock_code || '').trim()).filter(Boolean));
+      const hitStockCodes = new Set<string>();
+      const screenerAgg = new Map<string, { matches: number; stocks: Set<string> }>();
+      FIXED_SCREENERS.forEach((s) => {
+        screenerAgg.set(s.key, { matches: 0, stocks: new Set() });
+      });
+
+      const applyResultPage = (items: FiveFlagsResult[]) => {
+        items.forEach((x) => {
+          const code = String(x.stock_code || '').trim();
+          if (code) hitStockCodes.add(code);
+          const sk = resolveScreenerKey(String(x.screener_id || '')) || String(x.screener_id || '').trim();
+          if (!sk) return;
+          const existing = screenerAgg.get(sk) || { matches: 0, stocks: new Set<string>() };
+          existing.matches += 1;
+          if (code) existing.stocks.add(code);
+          screenerAgg.set(sk, existing);
+        });
+      };
+
+      applyResultPage(rs.items || []);
       let resultOffset = (rs.items || []).length;
       const resultTotal = Number(rs.total || resultOffset);
       while (resultOffset < resultTotal) {
@@ -483,13 +512,23 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
         );
         const pageItems = page.items || [];
         if (pageItems.length === 0) break;
-        pageItems.forEach((x) => {
-          const code = String(x.stock_code || '').trim();
-          if (code) hitStockCodes.add(code);
-        });
+        applyResultPage(pageItems);
         resultOffset += pageItems.length;
       }
       setHitStockCodeSet(hitStockCodes);
+      const totalMatches = Array.from(screenerAgg.values()).reduce((acc, x) => acc + (x.matches || 0), 0);
+      const stats: ScreenerHitStat[] = FIXED_SCREENERS.map((s) => {
+        const agg = screenerAgg.get(s.key) || { matches: 0, stocks: new Set<string>() };
+        return {
+          key: s.key,
+          label: s.label,
+          color: s.color,
+          matches: agg.matches || 0,
+          unique_stocks: agg.stocks.size || 0,
+          share: totalMatches > 0 ? (agg.matches || 0) / totalMatches : 0,
+        };
+      }).sort((a, b) => b.matches - a.matches);
+      setScreenerHitStats(stats);
 
       let nextOffset = allPoolStocks.length;
       const expectedTotal = Number(ps.total || allPoolStocks.length);
@@ -1509,6 +1548,43 @@ export default function FiveFlagsMonitor({ theme = 'dark' }: { theme?: 'dark' | 
                 就绪状态: <span style={{ color: palette.text }}>{readinessLabel(health?.readiness_reason)}</span>
               </span>
             </div>
+            <details style={{ marginTop: 6 }}>
+              <summary style={{ cursor: 'pointer', fontSize: 11, color: palette.dimText }}>
+                筛选器命中分布（全量结果）
+              </summary>
+              <div style={{ marginTop: 8, overflow: 'auto', border: `1px solid ${palette.inputBorder}`, borderRadius: 6, background: palette.inputBg }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ borderBottom: `1px solid ${palette.border}`, color: palette.dimText }}>
+                      <th style={{ textAlign: 'left', padding: '6px 8px' }}>筛选器</th>
+                      <th style={{ textAlign: 'right', padding: '6px 8px' }}>命中条目</th>
+                      <th style={{ textAlign: 'right', padding: '6px 8px' }}>命中股票</th>
+                      <th style={{ textAlign: 'right', padding: '6px 8px' }}>占比</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {screenerHitStats.map((s) => (
+                      <tr key={s.key} style={{ borderTop: `1px solid ${palette.border}` }}>
+                        <td style={{ padding: '6px 8px', color: palette.text, fontWeight: 700 }}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ width: 8, height: 8, borderRadius: 999, background: s.color, display: 'inline-block' }} />
+                            {s.label}
+                          </span>
+                        </td>
+                        <td style={{ padding: '6px 8px', textAlign: 'right', color: palette.text, fontFamily: 'monospace' }}>{s.matches}</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'right', color: palette.text, fontFamily: 'monospace' }}>{s.unique_stocks}</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'right', color: palette.dimText, fontFamily: 'monospace' }}>{(s.share * 100).toFixed(1)}%</td>
+                      </tr>
+                    ))}
+                    {!screenerHitStats.length && (
+                      <tr>
+                        <td colSpan={4} style={{ padding: '8px 8px', color: palette.dimText }}>暂无统计数据</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </details>
           </div>
 
           <div style={{ padding: '0 10px 6px', borderBottom: `1px solid ${palette.border}` }}>
