@@ -145,7 +145,7 @@ def upload_excel_file(excel_file_path: str) -> dict:
         return {'success': False, 'error': f'Missing columns: {missing}'}
 
     # Process each row
-    success_count = 0
+    records = []
     error_count = 0
     errors = []
 
@@ -169,17 +169,13 @@ def upload_excel_file(excel_file_path: str) -> dict:
             if not end_date:
                 end_date = '2026-04-30'
 
-            # Insert into database
-            pool_id = repo.insert_pool_record(
-                stock_code=stock_code,
-                stock_name=stock_name,
-                start_date=start_date,
-                end_date=end_date,
-                file_name=file_path.name
-            )
-
-            success_count += 1
-            logger.info(f"✓ Uploaded: {stock_code} {stock_name} (ID: {pool_id})")
+            records.append({
+                'stock_code': stock_code,
+                'stock_name': stock_name,
+                'start_date': start_date,
+                'end_date': end_date,
+                'file_name': file_path.name,
+            })
 
         except Exception as e:
             error_count += 1
@@ -187,13 +183,19 @@ def upload_excel_file(excel_file_path: str) -> dict:
             errors.append(error_msg)
             logger.error(f"✗ Error: {error_msg}")
 
+    write_stat = {'inserted': 0, 'skipped': 0}
+    if records:
+        write_stat = repo.upsert_pool_batch(records)
+        logger.info(f"✓ Pool upsert: inserted={write_stat.get('inserted')} skipped={write_stat.get('skipped')}")
+
     # Summary
-    total_count = success_count + error_count
+    total_count = len(records) + error_count
 
     logger.info(f"=" * 60)
     logger.info(f"Upload Complete:")
     logger.info(f"  Total: {total_count}")
-    logger.info(f"  Success: {success_count}")
+    logger.info(f"  Inserted: {write_stat.get('inserted')}")
+    logger.info(f"  Skipped: {write_stat.get('skipped')}")
     logger.info(f"  Errors: {error_count}")
 
     if errors:
@@ -202,7 +204,9 @@ def upload_excel_file(excel_file_path: str) -> dict:
     return {
         'success': True,
         'total': total_count,
-        'uploaded': success_count,
+        'uploaded': len(records),
+        'inserted': write_stat.get('inserted'),
+        'skipped': write_stat.get('skipped'),
         'errors': error_count,
         'error_details': errors[:5]  # First 5 errors
     }
